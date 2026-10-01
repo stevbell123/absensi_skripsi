@@ -22,14 +22,35 @@ class FaceDatabaseService {
     }
   }
 
-  /// Menyimpan embedding baru ke Firestore
+  /// Menyimpan embedding baru ke penyimpanan lokal (Hive) dan Firestore (Cloud)
   Future<void> saveEmbedding(String nim, String name, List<double> embedding) async {
-    await _firestore.collection(_firestoreCollection).doc(nim).set({
-      'nim': nim,
-      'name': name,
-      'embedding': embedding,
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
+    // 1. Simpan ke Hive box dulu agar lokal on-device SELALU punya datanya
+    try {
+      await initHive();
+      final box = Hive.box(_hiveBoxName);
+      await box.put(nim, {
+        'nim': nim,
+        'name': name,
+        'embedding': embedding,
+      });
+      print('[FaceDatabaseService] ✅ Embedding tersimpan di penyimpanan lokal (Hive).');
+    } catch (e) {
+      print('[FaceDatabaseService] ⚠️ Gagal simpan ke Hive: $e');
+    }
+
+    // 2. Simpan ke Firestore (Cloud)
+    try {
+      await _firestore.collection(_firestoreCollection).doc(nim).set({
+        'nim': nim,
+        'name': name,
+        'embedding': embedding,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      print('[FaceDatabaseService] ✅ Embedding tersimpan di Firestore.');
+    } catch (e) {
+      print('[FaceDatabaseService] ⚠️ Peringatan Firestore (permission-denied atau offline): $e');
+      // Tidak me-rethrow agar registrasi lokal siswa tetap sukses berjalan di HP
+    }
   }
 
   /// Menghapus embedding dari Firestore berdasarkan NIM

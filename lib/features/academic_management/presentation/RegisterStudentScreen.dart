@@ -70,9 +70,7 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
   bool _isAiReady = false;
   String _aiStatusText = 'Memuat model AI...';
 
-  // Menyimpan 3 foto + embedding sebelum dirata-ratakan
-  List<XFile> _capturedPhotos = [];
-  List<List<double>> _capturedEmbeddings = [];
+
 
   @override
   void initState() {
@@ -215,18 +213,33 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
   //   4. Simpan embedding ke list sementara
   // =========================================================================
   Future<List<double>?> _processOnePhoto(String filePath) async {
-    // 1. Deteksi wajah
+    // 1. Deteksi wajah menggunakan ML Kit
     final inputImage = InputImage.fromFilePath(filePath);
     final faces = await _detectorService.detectFaces(inputImage);
 
     if (faces.isEmpty) {
-      _showError("Wajah tidak terdeteksi. Geser ke tempat terang.");
+      _showError("Wajah tidak terdeteksi. Posisikan wajah di dalam bingkai oval.");
       return null;
     }
+
+    // Urutkan wajah berdasarkan luas bounding box terbesar (wajah utama/dominan siswa)
+    faces.sort((a, b) => (b.boundingBox.width * b.boundingBox.height)
+        .compareTo(a.boundingBox.width * a.boundingBox.height));
+
+    final dominantFace = faces.first;
+    final dominantArea = dominantFace.boundingBox.width * dominantFace.boundingBox.height;
+
+    // Filter cerdas anti-objek latar belakang:
+    // Jika terdeteksi lebih dari 1 wajah (misal: foto di dinding, pantulan, orang jauh di belakang),
+    // periksa apakah wajah kedua cukup besar (>= 35% ukuran wajah utama).
+    // Jika wajah kedua kecil, abaikan karena itu hanya noise latar belakang.
     if (faces.length > 1) {
-      _showError(
-          "Lebih dari 1 wajah terdeteksi (${faces.length}). Pastikan hanya 1 siswa.");
-      return null;
+      final secondaryArea = faces[1].boundingBox.width * faces[1].boundingBox.height;
+      if (secondaryArea >= 0.35 * dominantArea) {
+        _showError("Ada lebih dari 1 orang di depan kamera. Pastikan hanya 1 siswa di dalam bingkai.");
+        return null;
+      }
+      debugPrint('[AI] Terdeteksi ${faces.length} wajah. Mengabaikan ${faces.length - 1} wajah kecil di latar belakang.');
     }
 
     // 2. Baca gambar untuk di-crop
@@ -237,101 +250,52 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
       return null;
     }
 
-    // 3. Crop dan hitung embedding
+    // 3. Crop dan hitung embedding berdasarkan wajah dominan siswa
     final croppedFace = _embeddingService.cropAndAlignFace(
       fullImage,
-      faces[0].boundingBox,
+      dominantFace.boundingBox,
     );
     final embedding = _embeddingService.extractEmbedding(croppedFace);
 
-    debugPrint('[AI] Embedding berhasil dihitung (${embedding.length}-d)');
+    debugPrint('[AI] Embedding dominan berhasil dihitung (${embedding.length}-d)');
     return embedding;
   }
 
   // =========================================================================
-  // PROSES 3 FOTO & SIMPAN KE FIRESTORE (BARU — ON-DEVICE)
-  //
-  // SEBELUM: 3x HTTP POST ke server, server simpan foto + hitung embedding
-  // SESUDAH: 3 embedding dirata-ratakan di HP, hasilnya disimpan ke Firestore
-  //
-  // Rata-rata embedding = representasi wajah yang lebih robust karena
-  // menggabungkan berbagai sudut/pencahayaan. Logika ini sama persis
-  // dengan yang dilakukan server di fungsi muat_ulang_dataset().
+  // SINKRONISASI SERVER VPS DI LATAR BELAKANG (ASINKRON)
   // =========================================================================
-  Future<void> _finishRegistration() async {
-    setState(() => _isLoading = true);
-
+  Future<void> _syncToServer(String imagePath, String nim, String name) async {
+    // 1. Coba kirim ke Port 8001 (Server Baru: YOLOv26 + ArcFace)
     try {
-      final nim = _nimController.text.trim();
-      final name = _nameController.text.trim();
-
-      if (_capturedEmbeddings.isEmpty) {
-        _showError("Belum ada foto yang berhasil diproses.");
+      final uri = Uri.parse('http://103.175.206.22:8001/api/register-student');
+      final request = http.MultipartRequest('POST', uri);
+      request.fields['nim'] = nim;
+      request.fields['nama'] = name;
+      request.fields['class_id'] = widget.classId;
+      request.files.add(await http.MultipartFile.fromPath('file', imagePath));
+      final res = await request.send().timeout(const Duration(seconds: 8));
+      if (res.statusCode == 200) {
+        debugPrint('[SERVER 8001] ✅ Sukses sinkronisasi siswa ke server 8001.');
         return;
       }
+    } catch (e) {
+      debugPrint('[SERVER 8001] Info server 8001: $e');
+    }
 
-      // Rata-ratakan semua embedding
-      final int embDim = _capturedEmbeddings.first.length;
-      List<double> avgEmbedding = List.filled(embDim, 0.0);
-      for (var emb in _capturedEmbeddings) {
-        for (int i = 0; i < emb.length && i < embDim; i++) {
-          avgEmbedding[i] += emb[i];
-        }
-      }
-      for (int i = 0; i < avgEmbedding.length; i++) {
-        avgEmbedding[i] /= _capturedEmbeddings.length;
-      }
-
-      // L2 normalisasi ulang setelah dirata-rata
-      double norma = 0.0;
-      for (var v in avgEmbedding) {
-        norma += v * v;
-      }
-      norma = sqrt(norma);
-      if (norma > 0) {
-        for (int i = 0; i < avgEmbedding.length; i++) {
-          avgEmbedding[i] /= norma;
-        }
-      }
-
-      // Simpan embedding ke Firestore (koleksi face_embeddings)
-      await _databaseService.saveEmbedding(nim, name, avgEmbedding);
-
-      // Simpan thumbnail foto pertama ke sub-collection students (sama seperti lama)
-      await _savePhotoToFirestore(_capturedPhotos[0].path);
-
-      // Kirim juga ke Server VPS (YOLOv8 + ArcFace di Port 8001) agar server langsung mengenali
-      try {
-        final uri = Uri.parse('http://103.175.206.22:8001/api/register-student');
-        final request = http.MultipartRequest('POST', uri);
-        request.fields['nim'] = nim;
-        request.fields['nama'] = name;
-        request.fields['class_id'] = widget.classId;
-        request.files.add(await http.MultipartFile.fromPath('file', _capturedPhotos[0].path));
-        await request.send().timeout(const Duration(seconds: 15));
-        debugPrint('[SERVER YOLO] Sukses menyinkronkan siswa ke server VPS.');
-      } catch (e) {
-        debugPrint('[SERVER YOLO] Catatan: Server VPS offline, data tetap aman di Firestore: $e');
-      }
-
-      debugPrint('[AI] Registrasi berhasil: $name ($nim) '
-          'dari ${_capturedEmbeddings.length} variasi');
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-                "✅ Berhasil! ${_capturedEmbeddings.length} Variasi Wajah didaftarkan."),
-            backgroundColor: Colors.green,
-          ),
-        );
-        Navigator.pop(context);
+    // 2. Fallback kirim ke Port 8000 (Server Lama: YOLO + dlib)
+    try {
+      final uri = Uri.parse('http://103.175.206.22:8000/register');
+      final request = http.MultipartRequest('POST', uri);
+      request.fields['nim'] = nim;
+      request.fields['name'] = name;
+      request.fields['variasi'] = '1';
+      request.files.add(await http.MultipartFile.fromPath('file', imagePath));
+      final res = await request.send().timeout(const Duration(seconds: 8));
+      if (res.statusCode == 200) {
+        debugPrint('[SERVER 8000] ✅ Sukses sinkronisasi siswa ke server 8000.');
       }
     } catch (e) {
-      _showError("Gagal menyimpan: $e");
-      debugPrint('[AI] Error registrasi: $e');
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+      debugPrint('[SERVER 8000] Info server 8000: $e');
     }
   }
 
@@ -368,25 +332,18 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
         return;
       }
 
-      // 3. Simpan embedding ke Firestore (koleksi face_embeddings)
+      // 3. Simpan embedding ke database lokal (Hive) & Firestore (Cloud)
       await _databaseService.saveEmbedding(nim, name, embedding);
 
-      // 4. Simpan thumbnail foto siswa ke Firestore
-      await _savePhotoToFirestore(picture.path);
-
-      // 5. Kirim juga ke Server VPS (YOLOv26 + ArcFace di Port 8001) agar server mengenali
+      // 4. Simpan thumbnail foto siswa ke Firestore (non-fatal jika permission tertutup)
       try {
-        final uri = Uri.parse('http://103.175.206.22:8001/api/register-student');
-        final request = http.MultipartRequest('POST', uri);
-        request.fields['nim'] = nim;
-        request.fields['nama'] = name;
-        request.fields['class_id'] = widget.classId;
-        request.files.add(await http.MultipartFile.fromPath('file', picture.path));
-        await request.send().timeout(const Duration(seconds: 15));
-        debugPrint('[SERVER YOLO] Sukses menyinkronkan siswa ke server VPS.');
-      } catch (e) {
-        debugPrint('[SERVER YOLO] Catatan: Server VPS offline: $e');
+        await _savePhotoToFirestore(picture.path);
+      } catch (fe) {
+        debugPrint('[FIRESTORE] Gagal simpan thumbnail foto siswa: $fe');
       }
+
+      // 5. Sinkronkan ke server VPS di background
+      _syncToServer(picture.path, nim, name);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -406,11 +363,17 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
   }
 
   // =========================================================================
-  // DAFTAR VIA GALERI (1 Foto, sama seperti lama tapi on-device)
+  // DAFTAR VIA GALERI (1 Foto, on-device)
   // =========================================================================
   Future<void> _pickFromGallery() async {
-    if (_nimController.text.trim().isEmpty ||
-        _nameController.text.trim().isEmpty) return;
+    final nim = _nimController.text.trim();
+    final name = _nameController.text.trim();
+
+    if (nim.isEmpty || name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("⚠️ ID/NIM dan Nama tidak boleh kosong!")));
+      return;
+    }
     if (!_isAiReady) {
       _showError("AI belum siap. Tunggu sebentar...");
       return;
@@ -430,17 +393,23 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
         return;
       }
 
-      final nim = _nimController.text.trim();
-      final name = _nameController.text.trim();
-
-      // L2 normalisasi (sudah dinormalisasi dari extractEmbedding, tapi untuk jaga-jaga)
+      // 1. Simpan embedding ke Hive lokal & Firestore
       await _databaseService.saveEmbedding(nim, name, embedding);
-      await _savePhotoToFirestore(image.path);
+
+      // 2. Simpan thumbnail foto ke Firestore
+      try {
+        await _savePhotoToFirestore(image.path);
+      } catch (fe) {
+        debugPrint('[FIRESTORE] Gagal simpan thumbnail dari galeri: $fe');
+      }
+
+      // 3. Sinkronkan ke server VPS di background
+      _syncToServer(image.path, nim, name);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text("✅ Berhasil dari Galeri!"),
+          SnackBar(
+              content: Text("✅ Berhasil! Wajah $name ($nim) berhasil didaftarkan dari Galeri."),
               backgroundColor: Colors.green),
         );
         Navigator.pop(context);
@@ -478,13 +447,6 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
     if (!_isCameraInitialized) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-
-    // Indikator langkah dinamis
-    String stepText = _capturedPhotos.isEmpty
-        ? "Pose 1: Lurus Depan"
-        : _capturedPhotos.length == 1
-            ? "Pose 2: Miring Kiri/Kanan"
-            : "Pose 3: Nunduk/Kacamata";
 
     return Scaffold(
       backgroundColor: Colors.white,
