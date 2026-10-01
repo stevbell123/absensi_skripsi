@@ -1,0 +1,69 @@
+name: siap_app
+description: "SIAP - Sistem Informasi Akademik Pintar"
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management & routing
+  flutter_riverpod: ^2.5.1
+  go_router: ^14.2.0
+
+  # Firebase
+  firebase_core: ^3.3.0
+  firebase_auth: ^5.1.4
+  cloud_firestore: ^5.2.1
+  cloudinary_public: ^0.23.1 
+  cloud_functions: ^5.0.5
+
+# UI & utilitas (dipakai mulai Fase 3+, sudah didaftarkan dari awal)
+  fl_chart: ^1.2.0
+  pdf: ^3.11.0
+  printing: ^5.13.1
+  intl: ^0.19.0
+  cupertino_icons: ^1.0.6
+  file_picker: ^8.0.0
+  csv: ^6.0.0
+  firebase_storage: ^12.4.10
+  http: ^1.6.0
+  url_launcher: ^6.3.2
+  camera: ^0.10.5+9
+  image: ^4.1.3
+  image_picker: ^1.2.3
+  syncfusion_flutter_pdfviewer: ^33.2.13
+
+  # ==========================================
+  # TAMBAHAN UNTUK FITUR BACKUP DEVELOPER
+  # ==========================================
+  path_provider: ^2.1.2 
+  share_plus: ^7.2.2
+
+
+
+  # ==========================================
+  # ON-DEVICE AI (Menggantikan Server Python)
+  # Google ML Kit untuk deteksi wajah
+  # TFLite Flutter untuk menjalankan MobileFaceNet
+  # Hive untuk cache embedding offline
+  # ==========================================
+  google_mlkit_face_detection: ^0.12.0
+  tflite_flutter: ^0.11.0
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
+  # Model AI untuk deteksi wajah on-device
+  assets:
+    - assets/models/
