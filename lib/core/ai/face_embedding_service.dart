@@ -93,13 +93,17 @@ class FaceEmbeddingService {
       }
     }
 
-    // Tensor output memiliki shape [1, 128]
-    var output = List.generate(1, (i) => List.filled(128, 0.0));
+    // Tensor output dibuat dinamis sesuai dimensi model (misal [1, 192] atau [1, 128])
+    final outputTensors = _interpreter!.getOutputTensors();
+    final int outputDim = outputTensors.isNotEmpty && outputTensors[0].shape.isNotEmpty
+        ? outputTensors[0].shape.last
+        : 192;
+    var output = List.generate(1, (i) => List.filled(outputDim, 0.0));
 
     // Menjalankan inferensi model
     _interpreter!.run(input, output);
 
-    List<double> embedding = output[0];
+    List<double> embedding = List<double>.from(output[0]);
 
     // L2 Normalization (Normalisasi output embedding ke unit length)
     // Mengapa kita melakukan L2 normalisasi?

@@ -270,10 +270,11 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
         return;
       }
 
-      // Rata-ratakan semua embedding dari 3 variasi pose
-      List<double> avgEmbedding = List.filled(128, 0.0);
+      // Rata-ratakan semua embedding
+      final int embDim = _capturedEmbeddings.first.length;
+      List<double> avgEmbedding = List.filled(embDim, 0.0);
       for (var emb in _capturedEmbeddings) {
-        for (int i = 0; i < emb.length && i < 128; i++) {
+        for (int i = 0; i < emb.length && i < embDim; i++) {
           avgEmbedding[i] += emb[i];
         }
       }
@@ -335,12 +336,13 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
   }
 
   // =========================================================================
-  // JEPRET WAJAH (Bertahap sampai 3 kali, lalu proses)
-  // Logika alur sama seperti versi lama, tapi tidak ada HTTP request.
+  // PINDAI & DAFTARKAN WAJAH (SEKALI PINDAI / SCAN)
   // =========================================================================
   Future<void> _registerFace() async {
-    if (_nimController.text.trim().isEmpty ||
-        _nameController.text.trim().isEmpty) {
+    final nim = _nimController.text.trim();
+    final name = _nameController.text.trim();
+
+    if (nim.isEmpty || name.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("⚠️ ID/NIM dan Nama tidak boleh kosong!")));
       return;
@@ -353,47 +355,53 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
       return;
     }
 
+    setState(() => _isLoading = true);
+
     try {
-      // Ambil foto
+      // 1. Ambil foto dari kamera
       XFile picture = await _controller!.takePicture();
 
-      // Proses on-device: deteksi + embedding
-      setState(() => _isLoading = true);
+      // 2. Deteksi wajah & ekstrak embedding secara on-device
       final embedding = await _processOnePhoto(picture.path);
-      setState(() => _isLoading = false);
-
-      if (embedding == null) return; // Error sudah ditampilkan di _processOnePhoto
-
-      // Simpan foto & embedding ke list sementara
-      setState(() {
-        _capturedPhotos.add(picture);
-        _capturedEmbeddings.add(embedding);
-      });
-
-      if (_capturedPhotos.length < 3) {
-        // Belum 3 foto, minta pose berikutnya
-        String panduanPose = _capturedPhotos.length == 1
-            ? "Minta siswa agak miring ke kiri/kanan"
-            : "Minta siswa agak menunduk/pakai kacamata";
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-                "📸 Foto ${_capturedPhotos.length}/3 berhasil.\nSelanjutnya: $panduanPose"),
-            backgroundColor: Colors.blue,
-            duration: const Duration(seconds: 4),
-          ),
-        );
-      } else {
-        // Foto ke-3 sudah, langsung proses rata-rata dan simpan
-        await _finishRegistration();
+      if (embedding == null) {
+        setState(() => _isLoading = false);
+        return;
       }
-    } catch (e) {
+
+      // 3. Simpan embedding ke Firestore (koleksi face_embeddings)
+      await _databaseService.saveEmbedding(nim, name, embedding);
+
+      // 4. Simpan thumbnail foto siswa ke Firestore
+      await _savePhotoToFirestore(picture.path);
+
+      // 5. Kirim juga ke Server VPS (YOLOv26 + ArcFace di Port 8001) agar server mengenali
+      try {
+        final uri = Uri.parse('http://103.175.206.22:8001/api/register-student');
+        final request = http.MultipartRequest('POST', uri);
+        request.fields['nim'] = nim;
+        request.fields['nama'] = name;
+        request.fields['class_id'] = widget.classId;
+        request.files.add(await http.MultipartFile.fromPath('file', picture.path));
+        await request.send().timeout(const Duration(seconds: 15));
+        debugPrint('[SERVER YOLO] Sukses menyinkronkan siswa ke server VPS.');
+      } catch (e) {
+        debugPrint('[SERVER YOLO] Catatan: Server VPS offline: $e');
+      }
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("❌ Error: $e")));
+          SnackBar(
+            content: Text("✅ Berhasil! Wajah $name ($nim) berhasil dipindai & terdaftar."),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        Navigator.pop(context);
       }
-      setState(() => _isLoading = false);
+    } catch (e) {
+      _showError("Gagal mendaftarkan wajah: $e");
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -508,43 +516,92 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
       body: SingleChildScrollView(
         child: Column(
           children: [
-            // === PREVIEW KAMERA ===
+            // === PREVIEW KAMERA DENGAN OVAL SCANNER FRAME ===
             Container(
               width: double.infinity,
               height: 400,
               color: Colors.black,
-              child: ClipRect(
-                child: FittedBox(
-                  fit: BoxFit.cover,
-                  child: SizedBox(
-                    width: _controller!.value.previewSize!.height,
-                    height: _controller!.value.previewSize!.width,
-                    child: LayoutBuilder(builder: (context, constraints) {
-                      return GestureDetector(
-                        onTapDown: (details) async {
-                          if (_controller == null ||
-                              !_controller!.value.isInitialized) return;
-                          final offset = Offset(
-                              details.localPosition.dx / constraints.maxWidth,
-                              details.localPosition.dy /
-                                  constraints.maxHeight);
-                          await _controller!.setFocusPoint(offset);
-                          if (!_isExposureLocked) {
-                            await _controller!.setExposurePoint(offset);
-                          }
-                        },
-                        child: CameraPreview(_controller!),
-                      );
-                    }),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  ClipRect(
+                    child: FittedBox(
+                      fit: BoxFit.cover,
+                      child: SizedBox(
+                        width: _controller!.value.previewSize!.height,
+                        height: _controller!.value.previewSize!.width,
+                        child: LayoutBuilder(builder: (context, constraints) {
+                          return GestureDetector(
+                            onTapDown: (details) async {
+                              if (_controller == null ||
+                                  !_controller!.value.isInitialized) return;
+                              final offset = Offset(
+                                  details.localPosition.dx / constraints.maxWidth,
+                                  details.localPosition.dy /
+                                      constraints.maxHeight);
+                              await _controller!.setFocusPoint(offset);
+                              if (!_isExposureLocked) {
+                                await _controller!.setExposurePoint(offset);
+                              }
+                            },
+                            child: CameraPreview(_controller!),
+                          );
+                        }),
+                      ),
+                    ),
                   ),
-                ),
+
+                  // Bingkai Oval Scanner Target Wajah
+                  Container(
+                    width: 220,
+                    height: 290,
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: _isAiReady ? Colors.greenAccent : Colors.white,
+                        width: 3,
+                      ),
+                      borderRadius: BorderRadius.circular(140),
+                      boxShadow: [
+                        BoxShadow(
+                          color: (_isAiReady ? Colors.greenAccent : Colors.white)
+                              .withOpacity(0.2),
+                          blurRadius: 15,
+                          spreadRadius: 2,
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Label Panduan di Bawah Bingkai
+                  Positioned(
+                    bottom: 16,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.65),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.face, color: Colors.greenAccent, size: 18),
+                          SizedBox(width: 8),
+                          Text(
+                            "Posisikan wajah di dalam bingkai oval",
+                            style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
 
-            // === STATUS AI (BARU) ===
+            // === STATUS AI ===
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 6),
+              padding: const EdgeInsets.symmetric(vertical: 8),
               color: _isAiReady ? Colors.green.shade50 : Colors.orange.shade50,
               child: Text(
                 _aiStatusText,
@@ -559,47 +616,37 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
               ),
             ),
 
-            // === LABEL INSTRUKSI POSE ===
+            // === PANDUAN PINDAI ===
             Container(
-              margin: const EdgeInsets.only(top: 10),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
-                  color: Colors.orange.shade100,
-                  borderRadius: BorderRadius.circular(20)),
-              child: Text(stepText,
-                  style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.orange.shade900,
-                      fontSize: 16)),
-            ),
-
-            // === SOP ===
-            Container(
-              padding: const EdgeInsets.all(12),
-              margin:
-                  const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              padding: const EdgeInsets.all(14),
+              margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
               decoration: BoxDecoration(
                   color: Colors.blue.shade50,
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(10),
                   border: Border.all(color: Colors.blue.shade200)),
               child: const Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text("📌 SOP Pengambilan Foto:",
-                      style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: Colors.indigo,
-                          fontSize: 14)),
-                  SizedBox(height: 6),
-                  Text("1. Sistem butuh 3 pose agar akurasi AI tinggi.",
-                      style: TextStyle(fontSize: 13)),
-                  Text(
-                      "2. Tap (Sentuh) wajah di layar agar kamera fokus dan terang.",
-                      style: TextStyle(fontSize: 13)),
-                  Text(
-                      "3. Proses lokal di HP — tidak perlu koneksi internet.",
-                      style: TextStyle(fontSize: 13)),
+                  Row(
+                    children: [
+                      Icon(Icons.qr_code_scanner, color: Colors.indigo, size: 20),
+                      SizedBox(width: 8),
+                      Text("Panduan Pindai Wajah Siswa:",
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.indigo,
+                              fontSize: 14)),
+                    ],
+                  ),
+                  SizedBox(height: 8),
+                  Text("1. Arahkan wajah siswa tepat di dalam bingkai oval.",
+                      style: TextStyle(fontSize: 13, color: Colors.black87)),
+                  SizedBox(height: 4),
+                  Text("2. Pastikan pencahayaan cukup dan wajah siswa menatap lurus.",
+                      style: TextStyle(fontSize: 13, color: Colors.black87)),
+                  SizedBox(height: 4),
+                  Text("3. Tekan tombol 'Pindai & Daftarkan Wajah' di bawah.",
+                      style: TextStyle(fontSize: 13, color: Colors.black87)),
                 ],
               ),
             ),
@@ -634,10 +681,11 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
                   ),
                   const SizedBox(height: 24),
 
-                  // === TOMBOL JEPRET + GALERI ===
+                  // === TOMBOL PINDAI WAJAH + GALERI ===
                   Row(
                     children: [
                       Expanded(
+                        flex: 3,
                         child: ElevatedButton.icon(
                           onPressed:
                               (_isLoading || !_isAiReady) ? null : _registerFace,
@@ -647,35 +695,33 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
                                   height: 20,
                                   child: CircularProgressIndicator(
                                       color: Colors.white, strokeWidth: 2))
-                              : const Icon(Icons.camera_alt),
-                          label: Text(
-                              "Jepret (${_capturedPhotos.length + 1}/3)",
+                              : const Icon(Icons.document_scanner, size: 22),
+                          label: const Text(
+                              "Pindai & Daftarkan Wajah",
                               style:
-                                  const TextStyle(fontWeight: FontWeight.bold)),
+                                  TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
                           style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.blue.shade500,
+                              backgroundColor: Colors.indigo,
                               foregroundColor: Colors.white,
                               padding:
-                                  const EdgeInsets.symmetric(vertical: 14),
+                                  const EdgeInsets.symmetric(vertical: 15),
+                              elevation: 2,
                               shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8))),
+                                  borderRadius: BorderRadius.circular(10))),
                         ),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 10),
                       Expanded(
-                        child: ElevatedButton.icon(
+                        flex: 1,
+                        child: OutlinedButton(
                           onPressed:
                               (_isLoading || !_isAiReady) ? null : _pickFromGallery,
-                          icon: const Icon(Icons.photo_library),
-                          label: const Text("Pilih Galeri",
-                              style: TextStyle(fontWeight: FontWeight.bold)),
-                          style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.orange.shade500,
-                              foregroundColor: Colors.white,
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 14),
+                          child: const Icon(Icons.photo_library, color: Colors.indigo),
+                          style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              side: const BorderSide(color: Colors.indigo, width: 1.5),
                               shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8))),
+                                  borderRadius: BorderRadius.circular(10))),
                         ),
                       ),
                     ],

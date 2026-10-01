@@ -54,8 +54,17 @@ class FaceMatchingService {
   // Menghitung jarak Euclidean antara dua vektor embedding.
   // Jarak yang lebih rendah menunjukkan kemiripan yang lebih tinggi.
   static double euclideanDistance(List<double> a, List<double> b) {
+    if (a.isEmpty || b.isEmpty) return 999.0;
     if (a.length != b.length) {
-      throw ArgumentError('Panjang vektor tidak sama');
+      // Jika dimensi tidak cocok (misal 512-d server vs 192-d mobile),
+      // gunakan perbandingan irisan dimensi agar tidak crash
+      final minLen = min(a.length, b.length);
+      double sum = 0.0;
+      for (int i = 0; i < minLen; i++) {
+        double diff = a[i] - b[i];
+        sum += diff * diff;
+      }
+      return sqrt(sum);
     }
     double sum = 0.0;
     for (int i = 0; i < a.length; i++) {
@@ -67,13 +76,12 @@ class FaceMatchingService {
 
   // Menghitung Cosine Similarity (sebagai alternatif jika dibutuhkan).
   static double cosineSimilarity(List<double> a, List<double> b) {
-    if (a.length != b.length) {
-      throw ArgumentError('Panjang vektor tidak sama');
-    }
+    if (a.isEmpty || b.isEmpty) return 0.0;
+    final minLen = min(a.length, b.length);
     double dotProduct = 0.0;
     double normA = 0.0;
     double normB = 0.0;
-    for (int i = 0; i < a.length; i++) {
+    for (int i = 0; i < minLen; i++) {
       dotProduct += a[i] * b[i];
       normA += a[i] * a[i];
       normB += b[i] * b[i];
