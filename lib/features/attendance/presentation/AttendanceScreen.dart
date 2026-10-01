@@ -430,8 +430,8 @@ class _AttendanceScreenState extends State<AttendanceScreen>
           // Bingkai Kotak Scanner AI dengan Animasi Garis Laser
           Center(
             child: Container(
-              width: MediaQuery.of(context).size.width * 0.88,
-              height: 320,
+              width: MediaQuery.of(context).size.width * 0.92,
+              height: 380,
               decoration: BoxDecoration(
                 border: Border.all(
                   color: Colors.white.withOpacity(0.35),
