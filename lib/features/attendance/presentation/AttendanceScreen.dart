@@ -227,8 +227,7 @@ class _AttendanceScreenState extends State<AttendanceScreen>
 
           // Pencocokan vektor embedding terhadap database
           final results = _matchingService.matchFaces(allEmbeddings, allBoxes);
-          bool hasNewRecognition = false;
-          String newlyRecognized = '';
+          List<String> newlyRecognizedNames = [];
 
           for (var result in results) {
             if (result.nim != "Unknown") {
@@ -239,25 +238,31 @@ class _AttendanceScreenState extends State<AttendanceScreen>
               if (studentIndex != -1 &&
                   widget.records[studentIndex].status != AttendanceStatus.hadir) {
                 widget.records[studentIndex].status = AttendanceStatus.hadir;
-                hasNewRecognition = true;
-                newlyRecognized = widget.records[studentIndex].studentName;
+                final name = widget.records[studentIndex].studentName;
+                newlyRecognizedNames.add(name);
 
-                if (!_recognizedStudents.contains(newlyRecognized)) {
-                  _recognizedStudents.insert(0, newlyRecognized);
+                if (!_recognizedStudents.contains(name)) {
+                  _recognizedStudents.insert(0, name);
                 }
               }
             }
           }
 
-          // Notifikasi visual & getaran jika ada siswa yang berhasil diabsen
-          if (hasNewRecognition) {
+          // Notifikasi visual & getaran jika ada siswa (1 atau lebih) yang berhasil diabsen
+          if (newlyRecognizedNames.isNotEmpty) {
             HapticFeedback.mediumImpact();
             if (mounted) {
               setState(() {
-                _latestRecognizedName = newlyRecognized;
+                if (newlyRecognizedNames.length == 1) {
+                  _latestRecognizedName = newlyRecognizedNames.first;
+                } else if (newlyRecognizedNames.length == 2) {
+                  _latestRecognizedName = "${newlyRecognizedNames[0]} & ${newlyRecognizedNames[1]}";
+                } else {
+                  _latestRecognizedName = "${newlyRecognizedNames.take(2).join(', ')} +${newlyRecognizedNames.length - 2} lainnya";
+                }
               });
               _bannerTimer?.cancel();
-              _bannerTimer = Timer(const Duration(milliseconds: 2500), () {
+              _bannerTimer = Timer(const Duration(milliseconds: 3000), () {
                 if (mounted) setState(() => _latestRecognizedName = null);
               });
             }
