@@ -10,11 +10,22 @@
 # ==========================================================================
 
 import os
+# Matikan pencarian CUDA agar PyTorch & TensorFlow tidak konflik driver pada CPU VPS
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
+# Aktifkan pelacak error C++ (faulthandler) untuk mencegah silent crash
+import faulthandler
+faulthandler.enable()
 
 import io
 import cv2
+cv2.setNumThreads(0)
+
 import json
 import psutil
 import smtplib
@@ -31,7 +42,8 @@ from firebase_admin import credentials, firestore
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from ultralytics import YOLO
-from deepface import DeepFace
+
+# DeepFace tidak di-import di tingkat atas agar tidak membebani 1.5GB RAM dan tidak bentrok C++ runtime
 
 # Anti-DDoS & Pembatas Request
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -206,6 +218,7 @@ def _warmup_background():
     if tflite_interpreter is None:
         print(f"[DEEPFACE] Pre-loading model {FACE_MODEL} di background thread...", flush=True)
         try:
+            from deepface import DeepFace
             dummy = np.zeros((112, 112, 3), dtype=np.uint8)
             DeepFace.represent(
                 img_path=dummy,
@@ -232,7 +245,8 @@ def terapkan_clahe(gambar_rgb: np.ndarray, clip_limit: float = CLAHE_CLIP_LIMIT,
     Meningkatkan kontras lokal pada kanal Luminance (L) dalam ruang warna CIELAB.
     Mencegah distorsi warna dan kebal terhadap bayangan/backlight di ruang kelas.
     """
-    lab = cv2.cvtColor(gambar_rgb, cv2.COLOR_RGB2LAB)
+    gambar_c = np.ascontiguousarray(gambar_rgb)
+    lab = cv2.cvtColor(gambar_c, cv2.COLOR_RGB2LAB)
     l, a, b = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid)
     l_clahe = clahe.apply(l)
@@ -243,18 +257,22 @@ def perbaiki_orientasi_gambar(gambar_bytes: bytes, gunakan_clahe: bool = True) -
     """
     Pipeline Pra-Pemrosesan Citra:
     1. Membaca bytes gambar dan memperbaiki orientasi EXIF kamera smartphone secara otomatis
-    2. Konversi ke ruang warna RGB
-    3. Menerapkan Contrast Limited Adaptive Histogram Equalization (CLAHE) pada kanal Luminance
+    2. Batasi ukuran maksimum ke 1280px agar hemat RAM dan mencegah crash segfault
+    3. Konversi ke ruang warna RGB
+    4. Menerapkan Contrast Limited Adaptive Histogram Equalization (CLAHE) pada kanal Luminance
     """
     pil_img = Image.open(io.BytesIO(gambar_bytes))
     pil_img = ImageOps.exif_transpose(pil_img)
     pil_img = pil_img.convert("RGB")
-    gambar_rgb = np.array(pil_img)
+
+    # Batasi resolusi maksimum ke 1280px untuk kestabilan memori pada VPS 4GB
+    pil_img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+    gambar_rgb = np.ascontiguousarray(np.array(pil_img), dtype=np.uint8)
 
     if gunakan_clahe:
         gambar_rgb = terapkan_clahe(gambar_rgb)
 
-    return gambar_rgb
+    return np.ascontiguousarray(gambar_rgb)
 
 # Alias fungsi agar kompatibel penuh dengan semua modul
 praproses_gambar = perbaiki_orientasi_gambar
@@ -275,11 +293,12 @@ def hitung_cosine_similarity(vektor_a: np.ndarray, vektor_b: np.ndarray) -> floa
     return float(dot_product / (norma_a * norma_b))
 
 def ekstrak_embedding_tflite(gambar_wajah: np.ndarray) -> Optional[np.ndarray]:
-    """Ekstraksi embedding 128-dimensi via MobileFaceNet TFLite (~3ms, 100% cocok dengan Flutter)"""
+    """Ekstraksi embedding via MobileFaceNet TFLite (~3ms, 100% cocok dengan Flutter)"""
     if tflite_interpreter is None:
         return None
     try:
-        wajah_resized = cv2.resize(gambar_wajah, (112, 112))
+        wajah_c = np.ascontiguousarray(gambar_wajah)
+        wajah_resized = cv2.resize(wajah_c, (112, 112))
         wajah_norm = (wajah_resized.astype(np.float32) - 127.5) / 128.0
         input_tensor = np.expand_dims(wajah_norm, axis=0)
 
@@ -304,8 +323,9 @@ def ekstrak_embedding(gambar_wajah: np.ndarray) -> Optional[np.ndarray]:
         if emb_tflite is not None:
             return emb_tflite
 
-    # 2. Fallback ke DeepFace ArcFace
+    # 2. Fallback ke DeepFace ArcFace jika TFLite tidak ada
     try:
+        from deepface import DeepFace
         hasil = DeepFace.represent(
             img_path=gambar_wajah,
             model_name=FACE_MODEL,
@@ -319,14 +339,21 @@ def ekstrak_embedding(gambar_wajah: np.ndarray) -> Optional[np.ndarray]:
     return None
 
 def deteksi_dan_crop_wajah(gambar_rgb: np.ndarray):
-    """YOLOv8 mendeteksi multi-wajah (1-5 orang) dan memotong dengan padding 15%"""
+    """YOLO mendeteksi multi-wajah (1-5 orang) dan memotong dengan padding 15%"""
     if yolo_model is None:
         return [], []
 
-    hasil_yolo = yolo_model(gambar_rgb, conf=YOLO_CONFIDENCE, imgsz=YOLO_IMGSZ)
+    img_input = np.ascontiguousarray(gambar_rgb)
+    hasil_yolo = yolo_model.predict(
+        img_input,
+        conf=YOLO_CONFIDENCE,
+        imgsz=YOLO_IMGSZ,
+        device='cpu',
+        verbose=False,
+    )
     daftar_crop = []
     daftar_box = []
-    tinggi_img, lebar_img = gambar_rgb.shape[:2]
+    tinggi_img, lebar_img = img_input.shape[:2]
 
     for r in hasil_yolo:
         for box in r.boxes:
@@ -341,9 +368,9 @@ def deteksi_dan_crop_wajah(gambar_rgb: np.ndarray):
             crop_y2 = min(tinggi_img, y2 + pad_y)
             crop_x2 = min(lebar_img, x2 + pad_x)
 
-            crop = gambar_rgb[crop_y1:crop_y2, crop_x1:crop_x2]
+            crop = img_input[crop_y1:crop_y2, crop_x1:crop_x2]
             if crop.size > 0:
-                daftar_crop.append(crop)
+                daftar_crop.append(np.ascontiguousarray(crop))
                 daftar_box.append([x1, y1, x2, y2])
 
     return daftar_crop, daftar_box
