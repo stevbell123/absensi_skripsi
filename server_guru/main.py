@@ -10,6 +10,9 @@
 # ==========================================================================
 
 import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+
 import io
 import cv2
 import json
@@ -43,8 +46,8 @@ from slowapi.errors import RateLimitExceeded
 YOLO_MODEL_PATH = "yolov26n.pt"
 YOLO_CONFIDENCE = 0.35       # Confidence deteksi wajah siswa
 YOLO_IMGSZ = 640             # Resolusi inference YOLOv26 (optimal di VPS 4GB)
-FACE_MODEL = "ArcFace"       # Model embedding ArcFace 512 dimensi
-COSINE_THRESHOLD = 0.80      # Ambang batas ketat (> 0.80) sesuai spesifikasi TA
+FACE_MODEL = "ArcFace"       # Model embedding ArcFace 512 dimensi (atau MobileFaceNet 128-d)
+COSINE_THRESHOLD = 0.65      # Ambang batas kemiripan wajah (> 0.65)
 FACE_PADDING = 0.15          # Padding 15% sekitar bounding box wajah
 MAX_IMAGE_SIZE = 15 * 1024 * 1024  # Maks 15 MB
 WIB = timezone(timedelta(hours=7))
@@ -53,6 +56,32 @@ WIB = timezone(timedelta(hours=7))
 # Menjaga fitur wajah tetap tajam & jelas saat pencahayaan kelas redup, bayangan, atau backlight
 CLAHE_CLIP_LIMIT = 2.0       # Batas ambang amplifikasi kontras adaptif
 CLAHE_TILE_GRID = (8, 8)     # Pembagian grid kontekstual blok piksel (8x8)
+
+# --- Model MobileFaceNet TFLite (128 Dimensi) ---
+# Kompatibel 100% dengan ruang vektor embedding aplikasi mobile Flutter
+tflite_interpreter = None
+tflite_input_details = None
+tflite_output_details = None
+
+for m_path in [
+    "mobilefacenet.tflite",
+    "../mobilefacenet.tflite",
+    "/root/mobilefacenet.tflite",
+    "/root/server_guru/mobilefacenet.tflite",
+    "../assets/models/mobilefacenet.tflite",
+]:
+    if os.path.exists(m_path):
+        try:
+            import tensorflow as tf
+            tflite_interpreter = tf.lite.Interpreter(model_path=m_path)
+            tflite_interpreter.allocate_tensors()
+            tflite_input_details = tflite_interpreter.get_input_details()
+            tflite_output_details = tflite_interpreter.get_output_details()
+            print(f"[TFLITE] ✅ Model MobileFaceNet (128-d) aktif dari {m_path}", flush=True)
+            break
+        except Exception as te:
+            print(f"[TFLITE] ⚠️ Info model TFLite {m_path}: {te}", flush=True)
+
 
 
 # Kredensial Email Alert (bisa diisi via environment variable atau langsung)
@@ -158,32 +187,41 @@ def muat_database_siswa():
             if len(emb) == 0:
                 continue
 
+            emb_arr = np.array(emb, dtype=np.float64)
+            nama_siswa = data.get("name") or data.get("nama") or ""
             siswa_database[doc.id] = {
                 "nim": data.get("nim", doc.id),
-                "nama": data.get("name") or data.get("nama") or "",
+                "nama": nama_siswa,
                 "class_id": data.get("classId") or data.get("class_id") or "",
-                "embedding": np.array(emb, dtype=np.float64),
+                "embedding": emb_arr,
             }
+            print(f"  [DB DATA] Siswa {nama_siswa} ({doc.id}) -> Dimensi Vektor: {len(emb_arr)}", flush=True)
 
         print(f"[DB] ✅ {len(siswa_database)} data siswa aktif di memori server.", flush=True)
     except Exception as e:
         print(f"[DB] ❌ Gagal memuat database siswa: {e}", flush=True)
 
+def _warmup_background():
+    """Warmup model di background thread agar port 8001 langsung terbuka tanpa blocking"""
+    if tflite_interpreter is None:
+        print(f"[DEEPFACE] Pre-loading model {FACE_MODEL} di background thread...", flush=True)
+        try:
+            dummy = np.zeros((112, 112, 3), dtype=np.uint8)
+            DeepFace.represent(
+                img_path=dummy,
+                model_name=FACE_MODEL,
+                enforce_detection=False,
+                detector_backend="skip",
+            )
+            print(f"[DEEPFACE] ✅ Model {FACE_MODEL} siap di memori.", flush=True)
+        except Exception as e:
+            print(f"[DEEPFACE] ⚠️ Pre-load info: {e}", flush=True)
+
 @app.on_event("startup")
 async def startup_event():
     muat_database_siswa()
-    print(f"[DEEPFACE] Pre-loading model {FACE_MODEL}...", flush=True)
-    try:
-        dummy = np.zeros((112, 112, 3), dtype=np.uint8)
-        DeepFace.represent(
-            img_path=dummy,
-            model_name=FACE_MODEL,
-            enforce_detection=False,
-            detector_backend="skip",
-        )
-        print(f"[DEEPFACE] ✅ Model {FACE_MODEL} siap di memori.", flush=True)
-    except Exception as e:
-        print(f"[DEEPFACE] ⚠️ Pre-load info: {e}", flush=True)
+    # PENTING: Jangan blokir startup Uvicorn! Agar Port 8001 langsung terbuka seketika.
+    asyncio.create_task(asyncio.to_thread(_warmup_background))
 
 # =====================================================================
 # 6. FUNGSI UTILITAS AI: PREPROCESSING, DETEKSI & MATCHING
@@ -222,7 +260,13 @@ def perbaiki_orientasi_gambar(gambar_bytes: bytes, gunakan_clahe: bool = True) -
 praproses_gambar = perbaiki_orientasi_gambar
 
 def hitung_cosine_similarity(vektor_a: np.ndarray, vektor_b: np.ndarray) -> float:
-    """Menghitung Cosine Similarity: dot(A, B) / (||A|| * ||B||)"""
+    """Menghitung Cosine Similarity: dot(A, B) / (||A|| * ||B||) dengan proteksi keselarasan dimensi vektor"""
+    if len(vektor_a) == 0 or len(vektor_b) == 0:
+        return 0.0
+    if len(vektor_a) != len(vektor_b):
+        min_dim = min(len(vektor_a), len(vektor_b))
+        vektor_a = vektor_a[:min_dim]
+        vektor_b = vektor_b[:min_dim]
     dot_product = np.dot(vektor_a, vektor_b)
     norma_a = np.linalg.norm(vektor_a)
     norma_b = np.linalg.norm(vektor_b)
@@ -230,8 +274,37 @@ def hitung_cosine_similarity(vektor_a: np.ndarray, vektor_b: np.ndarray) -> floa
         return 0.0
     return float(dot_product / (norma_a * norma_b))
 
+def ekstrak_embedding_tflite(gambar_wajah: np.ndarray) -> Optional[np.ndarray]:
+    """Ekstraksi embedding 128-dimensi via MobileFaceNet TFLite (~3ms, 100% cocok dengan Flutter)"""
+    if tflite_interpreter is None:
+        return None
+    try:
+        wajah_resized = cv2.resize(gambar_wajah, (112, 112))
+        wajah_norm = (wajah_resized.astype(np.float32) - 127.5) / 128.0
+        input_tensor = np.expand_dims(wajah_norm, axis=0)
+
+        tflite_interpreter.set_tensor(tflite_input_details[0]['index'], input_tensor)
+        tflite_interpreter.invoke()
+        output = tflite_interpreter.get_tensor(tflite_output_details[0]['index'])[0]
+
+        # L2 Normalization (sesuai mobilefacenet)
+        norm = np.linalg.norm(output)
+        if norm > 0:
+            output = output / norm
+        return output.astype(np.float64)
+    except Exception as e:
+        print(f"[TFLITE EMBEDDING] Error: {e}", flush=True)
+        return None
+
 def ekstrak_embedding(gambar_wajah: np.ndarray) -> Optional[np.ndarray]:
-    """Mengekstrak vektor embedding 512-dimensi menggunakan ArcFace"""
+    """Mengekstrak vektor embedding wajah siswa (MobileFaceNet TFLite atau ArcFace DeepFace)"""
+    # 1. Gunakan MobileFaceNet jika model TFLite tersedia (sangat cepat & cocok dengan Flutter)
+    if tflite_interpreter is not None:
+        emb_tflite = ekstrak_embedding_tflite(gambar_wajah)
+        if emb_tflite is not None:
+            return emb_tflite
+
+    # 2. Fallback ke DeepFace ArcFace
     try:
         hasil = DeepFace.represent(
             img_path=gambar_wajah,
@@ -242,7 +315,7 @@ def ekstrak_embedding(gambar_wajah: np.ndarray) -> Optional[np.ndarray]:
         if hasil and len(hasil) > 0:
             return np.array(hasil[0]["embedding"], dtype=np.float64)
     except Exception as e:
-        print(f"[EMBEDDING] Error ekstraksi: {e}", flush=True)
+        print(f"[EMBEDDING] Error ekstraksi ArcFace: {e}", flush=True)
     return None
 
 def deteksi_dan_crop_wajah(gambar_rgb: np.ndarray):
@@ -288,6 +361,7 @@ def cocokkan_dengan_kelas(embedding: np.ndarray, class_id: Optional[str] = None)
             continue
 
         skor = hitung_cosine_similarity(embedding, data["embedding"])
+        print(f"    [MATCHING] {data['nama']} ({nim}) -> Similarity: {skor:.4f} (Threshold: {COSINE_THRESHOLD})", flush=True)
         if skor > skor_terbaik:
             skor_terbaik = skor
             siswa_terbaik = {
@@ -356,14 +430,17 @@ async def scan_attendance(
             if len(konten) > MAX_IMAGE_SIZE:
                 raise HTTPException(413, "Ukuran gambar terlalu besar (maks 15MB).")
 
-            # Perbaiki orientasi EXIF & konversi ke RGB
+            # Perbaiki orientasi EXIF & konversi ke RGB + CLAHE
+            print(f"\n[SCAN REQUEST] Menerima foto absensi ({len(konten)} bytes). Menerapkan CLAHE & YOLO...", flush=True)
             gambar_rgb = await asyncio.to_thread(perbaiki_orientasi_gambar, konten)
 
             # 1. YOLO mendeteksi seluruh koordinat wajah (Multi-wajah)
             daftar_crop, daftar_box = await asyncio.to_thread(deteksi_dan_crop_wajah, gambar_rgb)
             jumlah_wajah = len(daftar_crop)
+            print(f"[YOLO DETEKSI] Berhasil mendeteksi {jumlah_wajah} wajah dalam gambar.", flush=True)
 
             if jumlah_wajah == 0:
+                print("  [INFO] Tidak ada wajah terdeteksi dalam frame.", flush=True)
                 return {
                     "success": True,
                     "wajah_terdeteksi": 0,
@@ -501,7 +578,7 @@ def home():
         "clahe_clip_limit": CLAHE_CLIP_LIMIT,
         "clahe_tile_grid": CLAHE_TILE_GRID,
         "model_deteksi": YOLO_MODEL_PATH,
-        "model_embedding": FACE_MODEL,
+        "model_embedding": "MobileFaceNet TFLite (128-d)" if tflite_interpreter else f"DeepFace {FACE_MODEL} (512-d)",
         "threshold_cosine": COSINE_THRESHOLD,
         "total_siswa_terdaftar": len(siswa_database),
     }

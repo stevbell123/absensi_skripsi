@@ -72,6 +72,7 @@ class _AttendanceScreenState extends State<AttendanceScreen>
   // Daftar siswa yang terabsen pada sesi ini
   final List<String> _recognizedStudents = [];
   String? _latestRecognizedName;
+  String? _serverStatusMessage;
 
   int get _hadirCount =>
       widget.records.where((r) => r.status == AttendanceStatus.hadir).length;
@@ -208,6 +209,7 @@ class _AttendanceScreenState extends State<AttendanceScreen>
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final List dynamicList = data['siswa_dikenali'] ?? [];
+        final int faceCount = data['wajah_terdeteksi'] ?? 0;
         List<String> newlyRecognizedNames = [];
 
         for (var item in dynamicList) {
@@ -244,16 +246,36 @@ class _AttendanceScreenState extends State<AttendanceScreen>
                 _latestRecognizedName =
                     "${newlyRecognizedNames.take(2).join(', ')} (YOLO+CLAHE)";
               }
+              _serverStatusMessage = "✅ Hadir: ${newlyRecognizedNames.first}";
             });
             _bannerTimer?.cancel();
             _bannerTimer = Timer(const Duration(milliseconds: 3000), () {
               if (mounted) setState(() => _latestRecognizedName = null);
             });
           }
+        } else {
+          if (mounted) {
+            setState(() {
+              _serverStatusMessage = faceCount > 0
+                  ? "🌐 Server YOLO: $faceCount wajah terlihat, mencocokkan..."
+                  : "🌐 Server YOLO: Arahkan kamera ke wajah";
+            });
+          }
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _serverStatusMessage = "⚠️ Server Error ${response.statusCode}";
+          });
         }
       }
     } catch (e) {
       debugPrint('[SERVER SCAN ERROR] $e');
+      if (mounted) {
+        setState(() {
+          _serverStatusMessage = "❌ Server 8001 Offline / Timeout (Periksa VPS)";
+        });
+      }
     }
   }
 
@@ -586,11 +608,19 @@ class _AttendanceScreenState extends State<AttendanceScreen>
                         child: Text(
                           _isAutoScan
                               ? (_useServerEngine
-                                  ? "Mode Server YOLOv26 + CLAHE Aktif"
+                                  ? (_serverStatusMessage ?? "Mode Server YOLOv26 + CLAHE Aktif")
                                   : "Arahkan wajah siswa ke dalam kotak")
                               : "Auto-scan dijeda. Tekan tombol Play di bawah.",
-                          style: const TextStyle(
-                            color: Colors.white70,
+                          style: TextStyle(
+                            color: _useServerEngine &&
+                                    _serverStatusMessage != null &&
+                                    _serverStatusMessage!.startsWith("❌")
+                                ? Colors.amberAccent
+                                : (_useServerEngine &&
+                                        _serverStatusMessage != null &&
+                                        _serverStatusMessage!.startsWith("✅")
+                                    ? Colors.greenAccent
+                                    : Colors.white70),
                             fontSize: 12,
                             fontWeight: FontWeight.w500,
                           ),
@@ -610,7 +640,11 @@ class _AttendanceScreenState extends State<AttendanceScreen>
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               decoration: BoxDecoration(
                 color: _isAutoScan
-                    ? Colors.green.shade800.withOpacity(0.92)
+                    ? (_useServerEngine &&
+                            _serverStatusMessage != null &&
+                            _serverStatusMessage!.startsWith("❌")
+                        ? Colors.red.shade900.withOpacity(0.92)
+                        : Colors.green.shade800.withOpacity(0.92))
                     : Colors.orange.shade900.withOpacity(0.92),
                 borderRadius: BorderRadius.circular(20),
                 boxShadow: [
@@ -631,7 +665,9 @@ class _AttendanceScreenState extends State<AttendanceScreen>
                   const SizedBox(width: 8),
                   Text(
                     _isAutoScan
-                        ? "🟢 Auto-Scan Aktif ($_statusText)"
+                        ? (_useServerEngine
+                            ? "🌐 Server YOLOv26: ${_serverStatusMessage ?? '103.175.206.22:8001'}"
+                            : "🟢 Auto-Scan Aktif ($_statusText)")
                         : "⏸ Auto-Scan Dijeda",
                     style: const TextStyle(
                       color: Colors.white,
