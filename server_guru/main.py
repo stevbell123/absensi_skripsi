@@ -9,7 +9,21 @@
 # Port       : 8001 (Tidak mengganggu server lama di port 8000)
 # ==========================================================================
 
+import sys
 import os
+
+# ==========================================================================
+# WAJIB PALING ATAS: Blokir Triton (compiler GPU NVIDIA) agar tidak crash
+# di VPS CPU-only. Triton otomatis terinstal oleh PyTorch dan akan segfault
+# saat mencoba memuat driver CUDA yang tidak ada.
+# ==========================================================================
+sys.modules["triton"] = type(sys)("triton")
+sys.modules["triton.runtime"] = type(sys)("triton.runtime")
+sys.modules["triton.runtime.autotuner"] = type(sys)("triton.runtime.autotuner")
+sys.modules["triton.runtime.jit"] = type(sys)("triton.runtime.jit")
+sys.modules["triton.compiler"] = type(sys)("triton.compiler")
+sys.modules["triton.language"] = type(sys)("triton.language")
+
 # Matikan pencarian CUDA agar PyTorch & TensorFlow tidak konflik driver pada CPU VPS
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -17,6 +31,9 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["TRITON_PTXAS_PATH"] = "/dev/null"
+os.environ["TRITON_CUBIN_PATH"] = "/dev/null"
+os.environ["TORCH_INDUCTOR_DISABLE"] = "1"
 
 # Aktifkan pelacak error C++ (faulthandler) untuk mencegah silent crash
 import faulthandler
