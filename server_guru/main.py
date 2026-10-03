@@ -63,7 +63,7 @@ YOLO_MODEL_PATH = "yolov26n.pt"
 YOLO_CONFIDENCE = 0.35       # Confidence deteksi wajah siswa
 YOLO_IMGSZ = 640             # Resolusi inference YOLOv26 (optimal di VPS 4GB)
 FACE_MODEL = "ArcFace"       # Model embedding ArcFace 512 dimensi (atau MobileFaceNet 128-d)
-COSINE_THRESHOLD = 0.40      # Ambang batas kemiripan MobileFaceNet (Fajar: ~0.50, Budi: ~0.29)
+COSINE_THRESHOLD = 0.35      # Ambang batas optimal MobileFaceNet (langsung respon di frame pertama ~0.38)
 FACE_PADDING = 0.15          # Padding 15% sekitar bounding box wajah
 MAX_IMAGE_SIZE = 15 * 1024 * 1024  # Maks 15 MB
 WIB = timezone(timedelta(hours=7))
@@ -433,6 +433,34 @@ def eksekusi_backup() -> str:
 
     return nama_file
 
+def simpan_absensi_firestore(siswa_list: list):
+    """Simpan data kehadiran ke Firestore di latar belakang agar respon API scan super instan"""
+    if not db or len(siswa_list) == 0:
+        return
+    try:
+        sekarang = datetime.now(WIB)
+        tanggal_hari_ini = sekarang.strftime("%Y-%m-%d")
+        jam_sekarang = sekarang.strftime("%H:%M:%S")
+        doc_ref = db.collection("absensi_harian").document(tanggal_hari_ini)
+
+        kehadiran_dict = {}
+        for s in siswa_list:
+            kehadiran_dict[s["nim"]] = {
+                "nama": s["nama"],
+                "nim": s["nim"],
+                "waktu": jam_sekarang,
+                "similarity": s["similarity"],
+                "status": "hadir",
+            }
+
+        doc_ref.set({
+            "tanggal": tanggal_hari_ini,
+            "kehadiran": kehadiran_dict
+        }, merge=True)
+        print(f"  [FIRESTORE] ✅ {len(siswa_list)} siswa berhasil dicatat di absensi_harian/{tanggal_hari_ini}", flush=True)
+    except Exception as fe:
+        print(f"  [FIRESTORE] ⚠️ Gagal update real-time: {fe}", flush=True)
+
 # =====================================================================
 # 8. ENDPOINT UTAMA: SCAN ABSENSI SISWA (YOLO + ARCFACE)
 # =====================================================================
@@ -491,31 +519,9 @@ async def scan_attendance(
                     })
                     print(f"  [HADIR] ✅ {cocok['nama']} ({cocok['nim']}) - Sim: {cocok['similarity']}", flush=True)
 
-            # 3. Update Firestore absensi_harian/YYYY-MM-DD secara Real-Time via Admin SDK
+            # 3. Update Firestore absensi_harian secara asinkron di background agar respon ke HP instan (< 0.1 detik)
             if db and len(siswa_dikenali) > 0:
-                try:
-                    sekarang = datetime.now(WIB)
-                    tanggal_hari_ini = sekarang.strftime("%Y-%m-%d")
-                    jam_sekarang = sekarang.strftime("%H:%M:%S")
-                    doc_ref = db.collection("absensi_harian").document(tanggal_hari_ini)
-
-                    kehadiran_dict = {}
-                    for s in siswa_dikenali:
-                        kehadiran_dict[s["nim"]] = {
-                            "nama": s["nama"],
-                            "nim": s["nim"],
-                            "waktu": jam_sekarang,
-                            "similarity": s["similarity"],
-                            "status": "hadir",
-                        }
-
-                    doc_ref.set({
-                        "tanggal": tanggal_hari_ini,
-                        "kehadiran": kehadiran_dict
-                    }, merge=True)
-                    print(f"  [FIRESTORE] ✅ {len(siswa_dikenali)} siswa berhasil dicatat di absensi_harian/{tanggal_hari_ini}", flush=True)
-                except Exception as fe:
-                    print(f"  [FIRESTORE] ⚠️ Gagal update real-time: {fe}", flush=True)
+                asyncio.create_task(asyncio.to_thread(simpan_absensi_firestore, siswa_dikenali))
 
             return {
                 "success": True,
