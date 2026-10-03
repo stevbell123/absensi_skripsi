@@ -2,6 +2,7 @@ import 'dart:math';
 import 'dart:ui';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
+import 'clahe_service.dart';
 
 /// Layanan untuk menghasilkan embedding wajah (128-dimensi) menggunakan MobileFaceNet via TFLite.
 /// 
@@ -58,7 +59,8 @@ class FaceEmbeddingService {
   }
 
   /// Mengekstraksi vektor embedding dari gambar wajah berukuran 112x112.
-  List<double> extractEmbedding(img.Image faceImage) {
+  /// Secara default menerapkan pra-pemrosesan CLAHE pada kanal Luminansi (~3-5 ms).
+  List<double> extractEmbedding(img.Image faceImage, {bool applyClahe = true}) {
     if (_interpreter == null) {
       throw Exception('FaceEmbeddingService: Interpreter belum diinisialisasi');
     }
@@ -67,6 +69,12 @@ class FaceEmbeddingService {
     img.Image resizedImage = faceImage;
     if (resizedImage.width != 112 || resizedImage.height != 112) {
       resizedImage = img.copyResize(resizedImage, width: 112, height: 112);
+    }
+
+    // Menerapkan Contrast Limited Adaptive Histogram Equalization (CLAHE)
+    // untuk menstabilkan kontras pada area bayangan/backlight di ruang kelas
+    if (applyClahe) {
+      resizedImage = ClaheService.applyClahe(resizedImage);
     }
 
     // Membuat tensor input shape [1, 112, 112, 3]

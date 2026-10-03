@@ -18,6 +18,8 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 import 'dart:io';
 import 'dart:async';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 import '../models/attendance_model.dart';
 import '../../../core/ai/face_detector_service.dart';
@@ -49,6 +51,7 @@ class _AttendanceScreenState extends State<AttendanceScreen>
   bool _isScanningCycle = false;
   bool _isFlashOn = false;
   bool _isAutoScan = true; // Auto-scan aktif secara default
+  bool _useServerEngine = false; // false = On-Device + CLAHE, true = Server VPS YOLOv26 + CLAHE
 
   Timer? _autoScanTimer;
   Timer? _bannerTimer;
@@ -187,7 +190,75 @@ class _AttendanceScreenState extends State<AttendanceScreen>
   }
 
   // =========================================================================
-  // SIKLUS DETEKSI & PENCOCOKAN WAJAH OTOMATIS
+  // EKSEKUSI JALUR SERVER VPS (YOLOv26 + CLAHE + ARCFACE)
+  // =========================================================================
+  Future<void> _runServerScan(String filePath) async {
+    const String serverUrl = 'http://103.175.206.22:8001/api/scan-attendance';
+    try {
+      final request = http.MultipartRequest('POST', Uri.parse(serverUrl));
+      if (widget.classId.isNotEmpty) {
+        request.fields['class_id'] = widget.classId;
+      }
+      request.files.add(await http.MultipartFile.fromPath('file', filePath));
+
+      final streamedResponse =
+          await request.send().timeout(const Duration(seconds: 4));
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final List dynamicList = data['siswa_dikenali'] ?? [];
+        List<String> newlyRecognizedNames = [];
+
+        for (var item in dynamicList) {
+          final String nim = item['nim'] ?? '';
+          final String nama = item['nama'] ?? '';
+
+          final studentIndex = widget.records.indexWhere((r) =>
+              r.studentId == nim ||
+              r.studentName.toLowerCase() == nama.toLowerCase());
+
+          if (studentIndex != -1 &&
+              widget.records[studentIndex].status != AttendanceStatus.hadir) {
+            widget.records[studentIndex].status = AttendanceStatus.hadir;
+            final name = widget.records[studentIndex].studentName;
+            newlyRecognizedNames.add(name);
+
+            if (!_recognizedStudents.contains(name)) {
+              _recognizedStudents.insert(0, name);
+            }
+          }
+        }
+
+        if (newlyRecognizedNames.isNotEmpty) {
+          HapticFeedback.mediumImpact();
+          if (mounted) {
+            setState(() {
+              if (newlyRecognizedNames.length == 1) {
+                _latestRecognizedName =
+                    "${newlyRecognizedNames.first} (YOLOv26 + CLAHE Server)";
+              } else if (newlyRecognizedNames.length == 2) {
+                _latestRecognizedName =
+                    "${newlyRecognizedNames[0]} & ${newlyRecognizedNames[1]} (YOLO+CLAHE)";
+              } else {
+                _latestRecognizedName =
+                    "${newlyRecognizedNames.take(2).join(', ')} (YOLO+CLAHE)";
+              }
+            });
+            _bannerTimer?.cancel();
+            _bannerTimer = Timer(const Duration(milliseconds: 3000), () {
+              if (mounted) setState(() => _latestRecognizedName = null);
+            });
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[SERVER SCAN ERROR] $e');
+    }
+  }
+
+  // =========================================================================
+  // SIKLUS DETEKSI & PENCOCOKAN WAJAH OTOMATIS (DUAL-ENGINE)
   // =========================================================================
   Future<void> _runAutoScanCycle() async {
     if (_controller == null ||
@@ -200,71 +271,80 @@ class _AttendanceScreenState extends State<AttendanceScreen>
       // 1. Ambil frame foto secara cepat
       XFile picture = await _controller!.takePicture();
 
-      // 2. Deteksi wajah menggunakan Google ML Kit On-Device
-      final inputImage = InputImage.fromFilePath(picture.path);
-      final faces = await _detectorService.detectFaces(inputImage);
+      if (_useServerEngine) {
+        // MODE 2: Eksekusi Komputasi Berat di Server VPS (YOLOv26 + CLAHE + ArcFace)
+        await _runServerScan(picture.path);
+      } else {
+        // MODE 1: Eksekusi On-Device AI di HP (Google ML Kit + On-Device CLAHE + MobileFaceNet)
+        final inputImage = InputImage.fromFilePath(picture.path);
+        final faces = await _detectorService.detectFaces(inputImage);
 
-      if (faces.isNotEmpty) {
-        final imageBytes = await File(picture.path).readAsBytes();
-        final fullImage = img.decodeImage(imageBytes);
+        if (faces.isNotEmpty) {
+          final imageBytes = await File(picture.path).readAsBytes();
+          final rawImage = img.decodeImage(imageBytes);
 
-        if (fullImage != null) {
-          List<List<double>> allEmbeddings = [];
-          List<List<int>> allBoxes = [];
+          if (rawImage != null) {
+            // Selaraskan orientasi rotasi kamera secara otomatis (aman untuk mode lanskap)
+            final fullImage = img.bakeOrientation(rawImage);
 
-          for (final face in faces) {
-            final bbox = face.boundingBox;
-            final croppedFace = _embeddingService.cropAndAlignFace(fullImage, bbox);
-            final embedding = _embeddingService.extractEmbedding(croppedFace);
-            allEmbeddings.add(embedding);
-            allBoxes.add([
-              bbox.left.toInt(),
-              bbox.top.toInt(),
-              bbox.right.toInt(),
-              bbox.bottom.toInt()
-            ]);
-          }
+            List<List<double>> allEmbeddings = [];
+            List<List<int>> allBoxes = [];
 
-          // Pencocokan vektor embedding terhadap database
-          final results = _matchingService.matchFaces(allEmbeddings, allBoxes);
-          List<String> newlyRecognizedNames = [];
+            for (final face in faces) {
+              final bbox = face.boundingBox;
+              final croppedFace = _embeddingService.cropAndAlignFace(fullImage, bbox);
+              // Ekstraksi embedding dengan On-Device CLAHE aktif di HP
+              final embedding = _embeddingService.extractEmbedding(croppedFace);
+              allEmbeddings.add(embedding);
+              allBoxes.add([
+                bbox.left.toInt(),
+                bbox.top.toInt(),
+                bbox.right.toInt(),
+                bbox.bottom.toInt()
+              ]);
+            }
 
-          for (var result in results) {
-            if (result.nim != "Unknown") {
-              final studentIndex = widget.records.indexWhere((r) =>
-                  r.studentId == result.nim ||
-                  r.studentName.toLowerCase() == result.name.toLowerCase());
+            // Pencocokan vektor embedding terhadap database
+            final results = _matchingService.matchFaces(allEmbeddings, allBoxes);
+            List<String> newlyRecognizedNames = [];
 
-              if (studentIndex != -1 &&
-                  widget.records[studentIndex].status != AttendanceStatus.hadir) {
-                widget.records[studentIndex].status = AttendanceStatus.hadir;
-                final name = widget.records[studentIndex].studentName;
-                newlyRecognizedNames.add(name);
+            for (var result in results) {
+              if (result.nim != "Unknown") {
+                final studentIndex = widget.records.indexWhere((r) =>
+                    r.studentId == result.nim ||
+                    r.studentName.toLowerCase() == result.name.toLowerCase());
 
-                if (!_recognizedStudents.contains(name)) {
-                  _recognizedStudents.insert(0, name);
+                if (studentIndex != -1 &&
+                    widget.records[studentIndex].status != AttendanceStatus.hadir) {
+                  widget.records[studentIndex].status = AttendanceStatus.hadir;
+                  final name = widget.records[studentIndex].studentName;
+                  newlyRecognizedNames.add(name);
+
+                  if (!_recognizedStudents.contains(name)) {
+                    _recognizedStudents.insert(0, name);
+                  }
                 }
               }
             }
-          }
 
-          // Notifikasi visual & getaran jika ada siswa (1 atau lebih) yang berhasil diabsen
-          if (newlyRecognizedNames.isNotEmpty) {
-            HapticFeedback.mediumImpact();
-            if (mounted) {
-              setState(() {
-                if (newlyRecognizedNames.length == 1) {
-                  _latestRecognizedName = newlyRecognizedNames.first;
-                } else if (newlyRecognizedNames.length == 2) {
-                  _latestRecognizedName = "${newlyRecognizedNames[0]} & ${newlyRecognizedNames[1]}";
-                } else {
-                  _latestRecognizedName = "${newlyRecognizedNames.take(2).join(', ')} +${newlyRecognizedNames.length - 2} lainnya";
-                }
-              });
-              _bannerTimer?.cancel();
-              _bannerTimer = Timer(const Duration(milliseconds: 3000), () {
-                if (mounted) setState(() => _latestRecognizedName = null);
-              });
+            // Notifikasi visual & getaran jika ada siswa (1 atau lebih) yang berhasil diabsen
+            if (newlyRecognizedNames.isNotEmpty) {
+              HapticFeedback.mediumImpact();
+              if (mounted) {
+                setState(() {
+                  if (newlyRecognizedNames.length == 1) {
+                    _latestRecognizedName = "${newlyRecognizedNames.first} (On-Device + CLAHE)";
+                  } else if (newlyRecognizedNames.length == 2) {
+                    _latestRecognizedName = "${newlyRecognizedNames[0]} & ${newlyRecognizedNames[1]}";
+                  } else {
+                    _latestRecognizedName = "${newlyRecognizedNames.take(2).join(', ')} +${newlyRecognizedNames.length - 2} lainnya";
+                  }
+                });
+                _bannerTimer?.cancel();
+                _bannerTimer = Timer(const Duration(milliseconds: 3000), () {
+                  if (mounted) setState(() => _latestRecognizedName = null);
+                });
+              }
             }
           }
         }
@@ -401,6 +481,12 @@ class _AttendanceScreenState extends State<AttendanceScreen>
       );
     }
 
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final screenW = MediaQuery.of(context).size.width;
+    final screenH = MediaQuery.of(context).size.height;
+    final boxW = isLandscape ? screenW * 0.84 : screenW * 0.92;
+    final boxH = isLandscape ? screenH * 0.58 : 380.0;
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -432,11 +518,11 @@ class _AttendanceScreenState extends State<AttendanceScreen>
             ),
           ),
 
-          // Bingkai Kotak Scanner AI dengan Animasi Garis Laser
+          // Bingkai Kotak Scanner AI dengan Animasi Garis Laser (Adaptif Vertikal/Horizontal)
           Center(
             child: Container(
-              width: MediaQuery.of(context).size.width * 0.92,
-              height: 380,
+              width: boxW,
+              height: boxH,
               decoration: BoxDecoration(
                 border: Border.all(
                   color: Colors.white.withOpacity(0.35),
@@ -499,7 +585,9 @@ class _AttendanceScreenState extends State<AttendanceScreen>
                         ),
                         child: Text(
                           _isAutoScan
-                              ? "Arahkan wajah siswa ke dalam kotak"
+                              ? (_useServerEngine
+                                  ? "Mode Server YOLOv26 + CLAHE Aktif"
+                                  : "Arahkan wajah siswa ke dalam kotak")
                               : "Auto-scan dijeda. Tekan tombol Play di bawah.",
                           style: const TextStyle(
                             color: Colors.white70,
@@ -556,10 +644,81 @@ class _AttendanceScreenState extends State<AttendanceScreen>
             ),
           ),
 
+          // Saklar Pilihan Mode (Dual-Engine: On-Device + CLAHE vs Server VPS YOLOv26)
+          Positioned(
+            top: 54,
+            child: Container(
+              padding: const EdgeInsets.all(3),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.65),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: Colors.white24, width: 1),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  InkWell(
+                    onTap: () => setState(() => _useServerEngine = false),
+                    borderRadius: BorderRadius.circular(20),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: !_useServerEngine ? Colors.green.shade600 : Colors.transparent,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: const [
+                          Icon(Icons.bolt, size: 14, color: Colors.white),
+                          SizedBox(width: 4),
+                          Text(
+                            "⚡ On-Device + CLAHE",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  InkWell(
+                    onTap: () => setState(() => _useServerEngine = true),
+                    borderRadius: BorderRadius.circular(20),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: _useServerEngine ? Colors.blue.shade700 : Colors.transparent,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: const [
+                          Icon(Icons.cloud_sync, size: 14, color: Colors.white),
+                          SizedBox(width: 4),
+                          Text(
+                            "🌐 Server YOLOv26",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
           // Notifikasi Pop-Up Hijau Saat Siswa Terdeteksi
           if (_latestRecognizedName != null)
             Positioned(
-              top: 62,
+              top: 98,
               child: AnimatedOpacity(
                 duration: const Duration(milliseconds: 300),
                 opacity: 1.0,
