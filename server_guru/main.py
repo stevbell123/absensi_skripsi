@@ -62,8 +62,8 @@ from slowapi.errors import RateLimitExceeded
 YOLO_MODEL_PATH = "yolov26n.pt"
 YOLO_CONFIDENCE = 0.35       # Confidence deteksi wajah siswa
 YOLO_IMGSZ = 640             # Resolusi inference YOLOv26 (optimal di VPS 4GB)
-FACE_MODEL = "ArcFace"       # Model embedding ArcFace 512 dimensi (atau MobileFaceNet 128-d)
-COSINE_THRESHOLD = 0.35      # Ambang batas optimal MobileFaceNet (langsung respon di frame pertama ~0.38)
+COSINE_THRESHOLD = 0.38      # Ambang batas optimal MobileFaceNet
+SELISIH_MINIMAL = 0.08       # Margin proteksi anti-tertukar nama: selisih juara 1 vs juara 2 minimal 0.08
 FACE_PADDING = 0.15          # Padding 15% sekitar bounding box wajah
 MAX_IMAGE_SIZE = 15 * 1024 * 1024  # Maks 15 MB
 WIB = timezone(timedelta(hours=7))
@@ -372,12 +372,11 @@ def deteksi_dan_crop_wajah(gambar_rgb: np.ndarray):
         return [], []
 
 def cocokkan_dengan_kelas(embedding: np.ndarray, class_id: Optional[str] = None) -> Optional[dict]:
-    """Mencocokkan embedding wajah siswa dengan database (difilter per kelas jika ada)"""
+    """Mencocokkan embedding wajah siswa dengan database dengan proteksi anti-tertukar orang (Margin Verification)"""
     if len(siswa_database) == 0:
         return None
 
-    skor_terbaik = -1.0
-    siswa_terbaik = None
+    kandidat = []
 
     for nim, data in siswa_database.items():
         if class_id and data["class_id"] and data["class_id"] != class_id:
@@ -385,17 +384,33 @@ def cocokkan_dengan_kelas(embedding: np.ndarray, class_id: Optional[str] = None)
 
         skor = hitung_cosine_similarity(embedding, data["embedding"])
         print(f"    [MATCHING] {data['nama']} ({nim}) -> Similarity: {skor:.4f} (Threshold: {COSINE_THRESHOLD})", flush=True)
-        if skor > skor_terbaik:
-            skor_terbaik = skor
-            siswa_terbaik = {
-                "nim": nim,
-                "nama": data["nama"],
-                "similarity": round(skor, 4),
-            }
+        kandidat.append({
+            "nim": nim,
+            "nama": data["nama"],
+            "similarity": round(skor, 4),
+        })
 
-    if siswa_terbaik and skor_terbaik >= COSINE_THRESHOLD:
-        return siswa_terbaik
-    return None
+    if not kandidat:
+        return None
+
+    # Urutkan berdasarkan kemiripan tertinggi (Top-1 Ranking)
+    kandidat.sort(key=lambda x: x["similarity"], reverse=True)
+    juara_1 = kandidat[0]
+
+    # Syarat 1: Harus melewati batas minimal threshold (0.38)
+    if juara_1["similarity"] < COSINE_THRESHOLD:
+        return None
+
+    # Syarat 2: Proteksi Anti-Salah Nama / Anti-Tertukar Siswa (Margin Verification)
+    # Jika ada lebih dari 1 siswa terdaftar, selisih juara 1 dengan juara 2 harus minimal SELISIH_MINIMAL (0.08)
+    if len(kandidat) > 1:
+        juara_2 = kandidat[1]
+        selisih = juara_1["similarity"] - juara_2["similarity"]
+        if selisih < SELISIH_MINIMAL:
+            print(f"    [AMBIGUITAS DITOLAK] Wajah ambigu antara {juara_1['nama']} ({juara_1['similarity']}) & {juara_2['nama']} ({juara_2['similarity']}), selisih: {selisih:.4f} < {SELISIH_MINIMAL}", flush=True)
+            return None
+
+    return juara_1
 
 # =====================================================================
 # 7. LOGIKA BACKUP DATABASE KE STORAGE
