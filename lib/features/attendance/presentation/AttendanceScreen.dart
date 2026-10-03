@@ -237,9 +237,17 @@ class _AttendanceScreenState extends State<AttendanceScreen>
           final String nim = item['nim'] ?? '';
           final String nama = item['nama'] ?? '';
 
-          final studentIndex = widget.records.indexWhere((r) =>
-              r.studentId == nim ||
-              r.studentName.toLowerCase() == nama.toLowerCase());
+          final studentIndex = widget.records.indexWhere((r) {
+            final recName = r.studentName.toLowerCase().trim();
+            final srvName = nama.toLowerCase().trim();
+            final srvFirstName = srvName.split(' ').first;
+            final recFirstName = recName.split(' ').first;
+            return r.studentId == nim ||
+                recName == srvName ||
+                (srvName.isNotEmpty && recName.contains(srvName)) ||
+                (recName.isNotEmpty && srvName.contains(recName)) ||
+                (srvFirstName.length >= 3 && srvFirstName == recFirstName);
+          });
 
           if (studentIndex != -1 &&
               widget.records[studentIndex].status != AttendanceStatus.hadir) {

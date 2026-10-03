@@ -63,7 +63,7 @@ YOLO_MODEL_PATH = "yolov26n.pt"
 YOLO_CONFIDENCE = 0.35       # Confidence deteksi wajah siswa
 YOLO_IMGSZ = 640             # Resolusi inference YOLOv26 (optimal di VPS 4GB)
 FACE_MODEL = "ArcFace"       # Model embedding ArcFace 512 dimensi (atau MobileFaceNet 128-d)
-COSINE_THRESHOLD = 0.65      # Ambang batas kemiripan wajah (> 0.65)
+COSINE_THRESHOLD = 0.40      # Ambang batas kemiripan MobileFaceNet (Fajar: ~0.50, Budi: ~0.29)
 FACE_PADDING = 0.15          # Padding 15% sekitar bounding box wajah
 MAX_IMAGE_SIZE = 15 * 1024 * 1024  # Maks 15 MB
 WIB = timezone(timedelta(hours=7))
