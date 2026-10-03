@@ -85,11 +85,11 @@ for m_path in [
     if os.path.exists(m_path):
         try:
             import tensorflow as tf
-            tflite_interpreter = tf.lite.Interpreter(model_path=m_path)
+            tflite_interpreter = tf.lite.Interpreter(model_path=m_path, num_threads=1)
             tflite_interpreter.allocate_tensors()
             tflite_input_details = tflite_interpreter.get_input_details()
             tflite_output_details = tflite_interpreter.get_output_details()
-            print(f"[TFLITE] ✅ Model MobileFaceNet (128-d) aktif dari {m_path}", flush=True)
+            print(f"[TFLITE] ✅ Model MobileFaceNet aktif dari {m_path}", flush=True)
             break
         except Exception as te:
             print(f"[TFLITE] ⚠️ Info model TFLite {m_path}: {te}", flush=True)
@@ -343,37 +343,44 @@ def deteksi_dan_crop_wajah(gambar_rgb: np.ndarray):
     if yolo_model is None:
         return [], []
 
-    img_input = np.ascontiguousarray(gambar_rgb)
-    hasil_yolo = yolo_model.predict(
-        img_input,
-        conf=YOLO_CONFIDENCE,
-        imgsz=YOLO_IMGSZ,
-        device='cpu',
-        verbose=False,
-    )
-    daftar_crop = []
-    daftar_box = []
-    tinggi_img, lebar_img = img_input.shape[:2]
+    try:
+        import torch
+        torch.set_num_threads(1)
+        with torch.inference_mode():
+            img_input = np.ascontiguousarray(gambar_rgb)
+            hasil_yolo = yolo_model.predict(
+                img_input,
+                conf=YOLO_CONFIDENCE,
+                imgsz=YOLO_IMGSZ,
+                device='cpu',
+                verbose=False,
+            )
+            daftar_crop = []
+            daftar_box = []
+            tinggi_img, lebar_img = img_input.shape[:2]
 
-    for r in hasil_yolo:
-        for box in r.boxes:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            w = x2 - x1
-            h = y2 - y1
-            pad_x = int(w * FACE_PADDING)
-            pad_y = int(h * FACE_PADDING)
+            for r in hasil_yolo:
+                for box in r.boxes:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    w = x2 - x1
+                    h = y2 - y1
+                    pad_x = int(w * FACE_PADDING)
+                    pad_y = int(h * FACE_PADDING)
 
-            crop_y1 = max(0, y1 - pad_y)
-            crop_x1 = max(0, x1 - pad_x)
-            crop_y2 = min(tinggi_img, y2 + pad_y)
-            crop_x2 = min(lebar_img, x2 + pad_x)
+                    crop_y1 = max(0, y1 - pad_y)
+                    crop_x1 = max(0, x1 - pad_x)
+                    crop_y2 = min(tinggi_img, y2 + pad_y)
+                    crop_x2 = min(lebar_img, x2 + pad_x)
 
-            crop = img_input[crop_y1:crop_y2, crop_x1:crop_x2]
-            if crop.size > 0:
-                daftar_crop.append(np.ascontiguousarray(crop))
-                daftar_box.append([x1, y1, x2, y2])
+                    crop = img_input[crop_y1:crop_y2, crop_x1:crop_x2]
+                    if crop.size > 0:
+                        daftar_crop.append(np.ascontiguousarray(crop))
+                        daftar_box.append([x1, y1, x2, y2])
 
-    return daftar_crop, daftar_box
+            return daftar_crop, daftar_box
+    except Exception as e:
+        print(f"[YOLO DETEKSI ERROR] {e}", flush=True)
+        return [], []
 
 def cocokkan_dengan_kelas(embedding: np.ndarray, class_id: Optional[str] = None) -> Optional[dict]:
     """Mencocokkan embedding wajah siswa dengan database (difilter per kelas jika ada)"""
@@ -459,10 +466,10 @@ async def scan_attendance(
 
             # Perbaiki orientasi EXIF & konversi ke RGB + CLAHE
             print(f"\n[SCAN REQUEST] Menerima foto absensi ({len(konten)} bytes). Menerapkan CLAHE & YOLO...", flush=True)
-            gambar_rgb = await asyncio.to_thread(perbaiki_orientasi_gambar, konten)
+            gambar_rgb = perbaiki_orientasi_gambar(konten)
 
             # 1. YOLO mendeteksi seluruh koordinat wajah (Multi-wajah)
-            daftar_crop, daftar_box = await asyncio.to_thread(deteksi_dan_crop_wajah, gambar_rgb)
+            daftar_crop, daftar_box = deteksi_dan_crop_wajah(gambar_rgb)
             jumlah_wajah = len(daftar_crop)
             print(f"[YOLO DETEKSI] Berhasil mendeteksi {jumlah_wajah} wajah dalam gambar.", flush=True)
 
@@ -478,9 +485,9 @@ async def scan_attendance(
             siswa_dikenali = []
             nim_sudah_cocok = set()
 
-            # 2. Looping ekstraksi ArcFace & pencocokan Cosine Similarity
+            # 2. Looping ekstraksi embedding & pencocokan Cosine Similarity
             for i, crop in enumerate(daftar_crop):
-                emb = await asyncio.to_thread(ekstrak_embedding, crop)
+                emb = ekstrak_embedding(crop)
                 if emb is None:
                     continue
 
@@ -551,7 +558,7 @@ async def register_student(
         if len(konten) == 0:
             raise HTTPException(400, "File gambar kosong.")
 
-        gambar_rgb = await asyncio.to_thread(perbaiki_orientasi_gambar, konten)
+        gambar_rgb = perbaiki_orientasi_gambar(konten)
         daftar_crop, _ = deteksi_dan_crop_wajah(gambar_rgb)
 
         if len(daftar_crop) == 0:
