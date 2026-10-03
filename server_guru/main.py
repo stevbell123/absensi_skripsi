@@ -214,27 +214,20 @@ def muat_database_siswa():
         print(f"[DB] ❌ Gagal memuat database siswa: {e}", flush=True)
 
 def _warmup_background():
-    """Warmup model di background thread agar port 8001 langsung terbuka tanpa blocking"""
-    if tflite_interpreter is None:
-        print(f"[DEEPFACE] Pre-loading model {FACE_MODEL} di background thread...", flush=True)
+    """Warmup model MobileFaceNet TFLite agar siap di memori"""
+    if tflite_interpreter is not None:
         try:
-            from deepface import DeepFace
-            dummy = np.zeros((112, 112, 3), dtype=np.uint8)
-            DeepFace.represent(
-                img_path=dummy,
-                model_name=FACE_MODEL,
-                enforce_detection=False,
-                detector_backend="skip",
-            )
-            print(f"[DEEPFACE] ✅ Model {FACE_MODEL} siap di memori.", flush=True)
+            dummy = np.zeros((1, 112, 112, 3), dtype=np.float32)
+            tflite_interpreter.set_tensor(tflite_input_details[0]['index'], dummy)
+            tflite_interpreter.invoke()
+            print("[TFLITE] ✅ Model MobileFaceNet siap & teruji di memori.", flush=True)
         except Exception as e:
-            print(f"[DEEPFACE] ⚠️ Pre-load info: {e}", flush=True)
+            print(f"[TFLITE WARMUP] ⚠️ {e}", flush=True)
 
 @app.on_event("startup")
 async def startup_event():
     muat_database_siswa()
-    # PENTING: Jangan blokir startup Uvicorn! Agar Port 8001 langsung terbuka seketika.
-    asyncio.create_task(asyncio.to_thread(_warmup_background))
+    _warmup_background()
 
 # =====================================================================
 # 6. FUNGSI UTILITAS AI: PREPROCESSING, DETEKSI & MATCHING
@@ -316,38 +309,22 @@ def ekstrak_embedding_tflite(gambar_wajah: np.ndarray) -> Optional[np.ndarray]:
         return None
 
 def ekstrak_embedding(gambar_wajah: np.ndarray) -> Optional[np.ndarray]:
-    """Mengekstrak vektor embedding wajah siswa (MobileFaceNet TFLite atau ArcFace DeepFace)"""
-    # 1. Gunakan MobileFaceNet jika model TFLite tersedia (sangat cepat & cocok dengan Flutter)
-    if tflite_interpreter is not None:
-        emb_tflite = ekstrak_embedding_tflite(gambar_wajah)
-        if emb_tflite is not None:
-            return emb_tflite
-
-    # 2. Fallback ke DeepFace ArcFace jika TFLite tidak ada
-    try:
-        from deepface import DeepFace
-        hasil = DeepFace.represent(
-            img_path=gambar_wajah,
-            model_name=FACE_MODEL,
-            enforce_detection=False,
-            detector_backend="skip",
-        )
-        if hasil and len(hasil) > 0:
-            return np.array(hasil[0]["embedding"], dtype=np.float64)
-    except Exception as e:
-        print(f"[EMBEDDING] Error ekstraksi ArcFace: {e}", flush=True)
-    return None
+    """Mengekstrak vektor embedding 192-dimensi via MobileFaceNet TFLite (100% cocok dengan Flutter)"""
+    return ekstrak_embedding_tflite(gambar_wajah)
 
 def deteksi_dan_crop_wajah(gambar_rgb: np.ndarray):
     """YOLO mendeteksi multi-wajah (1-5 orang) dan memotong dengan padding 15%"""
-    if yolo_model is None:
+    if yolo_model is None or gambar_rgb is None or gambar_rgb.size == 0:
         return [], []
 
     try:
         import torch
         torch.set_num_threads(1)
-        with torch.inference_mode():
+        with torch.no_grad():
             img_input = np.ascontiguousarray(gambar_rgb)
+            if img_input.shape[0] < 32 or img_input.shape[1] < 32:
+                return [], []
+
             hasil_yolo = yolo_model.predict(
                 img_input,
                 conf=YOLO_CONFIDENCE,
@@ -360,10 +337,15 @@ def deteksi_dan_crop_wajah(gambar_rgb: np.ndarray):
             tinggi_img, lebar_img = img_input.shape[:2]
 
             for r in hasil_yolo:
+                if r.boxes is None or len(r.boxes) == 0:
+                    continue
                 for box in r.boxes:
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    coords = box.xyxy[0].tolist()
+                    x1, y1, x2, y2 = int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])
                     w = x2 - x1
                     h = y2 - y1
+                    if w <= 10 or h <= 10:
+                        continue
                     pad_x = int(w * FACE_PADDING)
                     pad_y = int(h * FACE_PADDING)
 
@@ -372,8 +354,11 @@ def deteksi_dan_crop_wajah(gambar_rgb: np.ndarray):
                     crop_y2 = min(tinggi_img, y2 + pad_y)
                     crop_x2 = min(lebar_img, x2 + pad_x)
 
+                    if crop_y2 <= crop_y1 or crop_x2 <= crop_x1:
+                        continue
+
                     crop = img_input[crop_y1:crop_y2, crop_x1:crop_x2]
-                    if crop.size > 0:
+                    if crop.size > 0 and crop.shape[0] > 10 and crop.shape[1] > 10:
                         daftar_crop.append(np.ascontiguousarray(crop))
                         daftar_box.append([x1, y1, x2, y2])
 
