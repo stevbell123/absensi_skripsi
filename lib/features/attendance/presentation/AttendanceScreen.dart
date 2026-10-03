@@ -196,14 +196,35 @@ class _AttendanceScreenState extends State<AttendanceScreen>
   Future<void> _runServerScan(String filePath) async {
     const String serverUrl = 'http://103.175.206.22:8001/api/scan-attendance';
     try {
+      // 1. Kompresi & Resize Foto Kamera Sebelum Dikirim (Sangat Penting!)
+      // Dari ukuran kamera asli ~1.7 MB (lambat di 4G) menjadi ~75 KB (terkirim kilat < 0.2 detik!)
+      List<int> uploadBytes;
+      try {
+        final rawBytes = await File(filePath).readAsBytes();
+        final decoded = img.decodeImage(rawBytes);
+        if (decoded != null) {
+          final resized = decoded.width > 960
+              ? img.copyResize(decoded, width: 960)
+              : decoded;
+          uploadBytes = img.encodeJpg(resized, quality: 78);
+        } else {
+          uploadBytes = rawBytes;
+        }
+      } catch (_) {
+        uploadBytes = await File(filePath).readAsBytes();
+      }
+
       final request = http.MultipartRequest('POST', Uri.parse(serverUrl));
       if (widget.classId.isNotEmpty) {
         request.fields['class_id'] = widget.classId;
       }
-      request.files.add(await http.MultipartFile.fromPath('file', filePath));
+      request.files.add(
+        http.MultipartFile.fromBytes('file', uploadBytes, filename: 'scan.jpg'),
+      );
 
+      // Timeout diperpanjang ke 10 detik agar aman di jaringan 4G/seluler
       final streamedResponse =
-          await request.send().timeout(const Duration(seconds: 4));
+          await request.send().timeout(const Duration(seconds: 10));
       final response = await http.Response.fromStream(streamedResponse);
 
       if (response.statusCode == 200) {
@@ -273,7 +294,14 @@ class _AttendanceScreenState extends State<AttendanceScreen>
       debugPrint('[SERVER SCAN ERROR] $e');
       if (mounted) {
         setState(() {
-          _serverStatusMessage = "❌ Server 8001 Offline / Timeout (Periksa VPS)";
+          final errStr = e.toString().toLowerCase();
+          if (errStr.contains('timeout')) {
+            _serverStatusMessage = "⏳ Jaringan 4G Lambat (Timeout)";
+          } else if (errStr.contains('refused') || errStr.contains('failed to connect')) {
+            _serverStatusMessage = "❌ Server 8001 Mati / Port Tertutup";
+          } else {
+            _serverStatusMessage = "❌ Gagal Menghubungi Server (Periksa Koneksi)";
+          }
         });
       }
     }
