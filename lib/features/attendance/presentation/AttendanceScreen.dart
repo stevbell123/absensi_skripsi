@@ -20,6 +20,7 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'dart:math';
 
 import '../models/attendance_model.dart';
 import '../../../core/ai/face_detector_service.dart';
@@ -205,7 +206,7 @@ class _AttendanceScreenState extends State<AttendanceScreen>
         if (decoded != null) {
           // Resolusi optimal 1280px agar wajah siswa yang berjarak 2-3 meter
           // atau berkelompok 5-6 orang tetap tajam & tidak pecah saat di-crop YOLO
-          final int maxDim = max(decoded.width, decoded.height);
+          final int maxDim = decoded.width > decoded.height ? decoded.width : decoded.height;
           final resized = maxDim > 1280
               ? (decoded.width >= decoded.height
                   ? img.copyResize(decoded, width: 1280)
