@@ -203,10 +203,15 @@ class _AttendanceScreenState extends State<AttendanceScreen>
         final rawBytes = await File(filePath).readAsBytes();
         final decoded = img.decodeImage(rawBytes);
         if (decoded != null) {
-          final resized = decoded.width > 960
-              ? img.copyResize(decoded, width: 960)
+          // Resolusi optimal 1280px agar wajah siswa yang berjarak 2-3 meter
+          // atau berkelompok 5-6 orang tetap tajam & tidak pecah saat di-crop YOLO
+          final int maxDim = max(decoded.width, decoded.height);
+          final resized = maxDim > 1280
+              ? (decoded.width >= decoded.height
+                  ? img.copyResize(decoded, width: 1280)
+                  : img.copyResize(decoded, height: 1280))
               : decoded;
-          uploadBytes = img.encodeJpg(resized, quality: 78);
+          uploadBytes = img.encodeJpg(resized, quality: 82);
         } else {
           uploadBytes = rawBytes;
         }
