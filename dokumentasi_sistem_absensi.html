@@ -463,9 +463,117 @@
       </div>
     </div>
 
-    <!-- SECTION 4: HISTORI PEMECAHAN MASALAH -->
+    <!-- SECTION 4: ARSITEKTUR & PERANAN FIREBASE CLOUD FIRESTORE -->
     <div class="card">
-      <h2>4. Kronologi & Rekayasa Teknis Pemecahan Masalah (Problem Solving)</h2>
+      <h2>4. Arsitektur & Peranan Kritis Firebase Cloud Firestore dalam Sistem Absensi</h2>
+      <p>Dalam penelitian skripsi ini, <strong>Google Firebase Cloud Firestore</strong> bertindak sebagai <em>Single Source of Truth</em> (Pusat Data Tunggal Terpadu) yang menghubungkan aplikasi smartphone guru dengan server AI VPS. Berikut adalah peran strategis dan implementasi teknisnya:</p>
+
+      <div class="callout callout-success">
+        <strong>Mengapa Menggunakan Firebase Cloud Firestore?</strong>
+        <p>Firestore adalah basis data NoSQL berorientasi dokumen yang memiliki latensi sangat rendah, mendukung sinkronisasi real-time secara dua arah, dan memiliki fitur <em>Offline Persistence</em> otomatis. Ini menjamin aplikasi absensi tetap dapat berjalan tanpa hambatan meskipun koneksi internet di sekolah sedang tidak stabil.</p>
+      </div>
+
+      <h3>A. Pemodelan Data & Struktur Koleksi Firestore:</h3>
+      <p>Sistem ini mengelola beberapa koleksi data utama yang dirancang secara efisien:</p>
+
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Nama Koleksi</th>
+              <th>Format Document ID</th>
+              <th>Struktur Data & Field Utama</th>
+              <th>Fungsi dalam Sistem Absensi</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>face_embeddings</code></td>
+              <td>Nomor Induk Siswa / NIM (misal: <code>220101001</code>)</td>
+              <td>
+                <code>nim</code> (String)<br>
+                <code>name</code> (String)<br>
+                <code>classId</code> (String)<br>
+                <code>embedding</code> (Array of 192 Float32)<br>
+                <code>updatedAt</code> (Timestamp)
+              </td>
+              <td>Menyimpan vektor representasi matematis wajah siswa dari MobileFaceNet.</td>
+            </tr>
+            <tr>
+              <td><code>absensi_harian</code></td>
+              <td>Format Tanggal ISO (misal: <code>2026-10-05</code>)</td>
+              <td>
+                <code>tanggal</code> (String YYYY-MM-DD)<br>
+                <code>kehadiran</code> (Map of Objects):<br>
+                &nbsp;&nbsp;↳ <code>[NIM]</code>: { nama, nim, waktu, similarity, status }
+              </td>
+              <td>Menyimpan rekap kehadiran siswa harian secara real-time per tanggal pertemuan.</td>
+            </tr>
+            <tr>
+              <td><code>classes</code></td>
+              <td>Class ID (misal: <code>ti_pagi_2026</code>)</td>
+              <td>
+                <code>className</code> (String)<br>
+                <code>academicYear</code> (String)<br>
+                <code>totalStudents</code> (Number)
+              </td>
+              <td>Mengelompokkan siswa ke dalam kelas/rombongan belajar tertentu.</td>
+            </tr>
+            <tr>
+              <td><code>users</code></td>
+              <td>User UID Firebase Auth</td>
+              <td>
+                <code>email</code>, <code>role</code> ("guru" / "admin"), <code>fullName</code>
+              </td>
+              <td>Autentikasi dan kontrol hak akses guru ke menu absensi dan laporan.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>B. Keamanan & Perlindungan Privasi Data Biometrik (Nilai Plus Skripsi):</h3>
+      <div class="callout callout-info">
+        <strong>Prinsip Privasi "One-Way Mathematical Representation":</strong><br>
+        Salah satu keunggulan ilmiah sistem ini adalah <strong>TIDAK menyimpan file foto wajah mentah siswa</strong> di dalam database utama. Sebagai gantinya, Firestore hanya menyimpan <strong>vektor numerik 192 dimensi</strong> hasil inferensi MobileFaceNet.<br>
+        Vektor ini bersifat <em>irreversible</em> (tidak dapat direkonstruksi kembali menjadi foto wajah asli), sehingga memenuhi standar etika privasi biometrik internasional (GDPR / UU Perlindungan Data Pribadi). Jika database diretas, data tersebut hanyalah deretan angka desimal acak yang tidak dapat disalahgunakan.
+      </div>
+
+      <h3>C. Integrasi Ganda Dua Arah (Dual SDK Architecture):</h3>
+      <p>Sistem ini memanfaatkan dua mekanisme integrasi Firebase secara bersamaan:</p>
+      <ol>
+        <li><strong>Sisi Klien Smartphone (Flutter):</strong> Menggunakan pustaka resmi <code>cloud_firestore</code>.
+          <ul>
+            <li>Saat pendaftaran siswa baru: Vektor embedding diekstraksi dan langsung disimpan ke Firestore.</li>
+            <li>Sebelum kelas dimulai: Aplikasi mengunduh vektor siswa satu kelas dan menyimpannya ke memori lokal <strong>Hive DB</strong> untuk mendukung absensi instan secara offline.</li>
+          </ul>
+        </li>
+        <li><strong>Sisi Server AI VPS (Python):</strong> Menggunakan pustaka resmi <code>firebase-admin</code> (Admin SDK) dengan kredensial aman <code>firebase-adminsdk.json</code>.
+          <ul>
+            <li>Saat server menerima foto dari mode 🌐 YOLOv26: Begitu wajah cocok (Cosine Sim &gt; 0.28), server mengeksekusi penulisan status hadir ke koleksi <code>absensi_harian</code> secara asinkron (background task) dalam &lt; 0.1 detik.</li>
+          </ul>
+        </li>
+      </ol>
+
+      <h3>D. Diagram Alur Sinkronisasi Hibrida (Offline-to-Online):</h3>
+      <pre><code>[Pendaftaran Siswa di HP]
+        │
+        ▼ (Ekstrak 192-d MobileFaceNet)
+[Upload ke Cloud Firestore: koleksi face_embeddings]
+        │
+        ├───────────────────────────────────────┐
+        ▼ (Download per Kelas)                   ▼ (Admin SDK Sinkronisasi)
+[Cache Lokal HP: Hive Box]              [Memori RAM Server VPS: main.py]
+        │                                       │
+        ▼                                       ▼
+⚡ Mode On-Device (Offline 0.05s)       🌐 Mode Server (Multi-Wajah Online)
+        │                                       │
+        ▼ (Catat Hadir)                         ▼ (Catat Hadir)
+[Firestore: koleksi absensi_harian / YYYY-MM-DD (Real-time Cloud)]</code></pre>
+    </div>
+
+    <!-- SECTION 5: HISTORI PEMECAHAN MASALAH -->
+    <div class="card">
+      <h2>5. Kronologi & Rekayasa Teknis Pemecahan Masalah (Problem Solving)</h2>
       <p>Berikut adalah catatan tahapan rekayasa perangkat lunak dan AI yang telah kita selesaikan secara terperinci:</p>
 
       <h3>1. Mengatasi Crash "Segmentation Fault (Core Dumped)" pada VPS Ubuntu:</h3>
@@ -486,9 +594,9 @@
       <p><strong>Solusi:</strong> Menjalankan Uvicorn dengan parameter <code>--no-access-log</code> untuk menyaring kebisingan pemindaian otomatis crawler internet (seperti Shadowserver dan Shodan) sehingga terminal VPS tetap bersih dan fokus pada log absensi.</p>
     </div>
 
-    <!-- SECTION 5: KESIMPULAN REKOMENDASI SKRIPSI -->
+    <!-- SECTION 6: KESIMPULAN REKOMENDASI SKRIPSI -->
     <div class="card">
-      <h2>5. Rekomendasi Penggunaan untuk Sidang Skripsi</h2>
+      <h2>6. Rekomendasi Penggunaan untuk Sidang Skripsi</h2>
       <div class="callout callout-success">
         <strong>Poin Unggulan yang Dapat Dipresentasikan:</strong>
         <ol>
