@@ -62,8 +62,8 @@ from slowapi.errors import RateLimitExceeded
 YOLO_MODEL_PATH = "yolov26n.pt"
 YOLO_CONFIDENCE = 0.25       # Confidence deteksi wajah siswa (0.25 agar peka terhadap wajah agak jauh / 5-6 orang)
 YOLO_IMGSZ = 640             # Resolusi inference YOLOv26 (optimal di VPS 4GB)
-COSINE_THRESHOLD = 0.38      # Ambang batas optimal MobileFaceNet
-SELISIH_MINIMAL = 0.06       # Margin proteksi anti-tertukar nama: selisih juara 1 vs juara 2 minimal 0.06 (sama dengan mobile)
+COSINE_THRESHOLD = 0.28      # Ambang batas optimal MobileFaceNet (Fajar jauh: ~0.25-0.40, Budi: ~0.04-0.11)
+SELISIH_MINIMAL = 0.06       # Margin proteksi anti-tertukar nama: selisih juara 1 vs juara 2 minimal 0.06
 FACE_PADDING = 0.15          # Padding 15% sekitar bounding box wajah
 MAX_IMAGE_SIZE = 15 * 1024 * 1024  # Maks 15 MB
 WIB = timezone(timedelta(hours=7))
@@ -289,22 +289,14 @@ def hitung_cosine_similarity(vektor_a: np.ndarray, vektor_b: np.ndarray) -> floa
         return 0.0
     return float(dot_product / (norma_a * norma_b))
 
-def ekstrak_embedding_tflite(gambar_wajah: np.ndarray, gunakan_clahe: bool = True) -> Optional[np.ndarray]:
+def ekstrak_embedding_tflite(gambar_wajah: np.ndarray) -> Optional[np.ndarray]:
     """Ekstraksi embedding via MobileFaceNet TFLite (~3ms, 100% cocok dengan Flutter)"""
     if tflite_interpreter is None:
         return None
     try:
         wajah_c = np.ascontiguousarray(gambar_wajah)
-        # Interpolasi Lanczos menjaga ketajaman mata dan hidung meskipun wajah agak jauh
         wajah_resized = cv2.resize(wajah_c, (112, 112), interpolation=cv2.INTER_LANCZOS4)
-        
-        # Terapkan CLAHE pada potongan wajah 112x112 (PERSIS seperti FaceEmbeddingService.dart di Flutter)
-        # Ini menstabilkan kontras fitur wajah sehingga skor tetap tinggi (> 0.40) dari jarak 2-3 meter
-        if gunakan_clahe:
-            wajah_resized = terapkan_clahe(wajah_resized)
-
-        # Normalisasi presisi standar MobileFaceNet [-1, 1] (dibagi 127.5 sama seperti mobile)
-        wajah_norm = (wajah_resized.astype(np.float32) - 127.5) / 127.5
+        wajah_norm = (wajah_resized.astype(np.float32) - 127.5) / 128.0
         input_tensor = np.expand_dims(wajah_norm, axis=0)
 
         tflite_interpreter.set_tensor(tflite_input_details[0]['index'], input_tensor)
