@@ -161,8 +161,11 @@ class _AttendanceScreenState extends State<AttendanceScreen>
     _autoScanTimer?.cancel();
     if (!_isAutoScan) return;
 
-    // Memindai secara berkala setiap 1.6 detik
-    _autoScanTimer = Timer.periodic(const Duration(milliseconds: 1600), (timer) {
+    // Mode On-Device super gesit: scan setiap 600ms (kurang dari 1 detik langsung terabsen!)
+    // Mode Server: scan setiap 1400ms agar jaringan 4G tetap stabil & hemat bandwidth
+    final int intervalMs = _useServerEngine ? 1400 : 600;
+
+    _autoScanTimer = Timer.periodic(Duration(milliseconds: intervalMs), (timer) {
       if (!_isScanningCycle && _isAiReady && _isCameraInitialized && _isAutoScan && mounted) {
         _runAutoScanCycle();
       }
@@ -374,9 +377,17 @@ class _AttendanceScreenState extends State<AttendanceScreen>
 
             for (var result in results) {
               if (result.nim != "Unknown") {
-                final studentIndex = widget.records.indexWhere((r) =>
-                    r.studentId == result.nim ||
-                    r.studentName.toLowerCase() == result.name.toLowerCase());
+                final studentIndex = widget.records.indexWhere((r) {
+                  final recName = r.studentName.toLowerCase().trim();
+                  final resName = result.name.toLowerCase().trim();
+                  final resFirstName = resName.split(' ').first;
+                  final recFirstName = recName.split(' ').first;
+                  return r.studentId == result.nim ||
+                      recName == resName ||
+                      (resName.isNotEmpty && recName.contains(resName)) ||
+                      (recName.isNotEmpty && resName.contains(recName)) ||
+                      (resFirstName.length >= 3 && resFirstName == recFirstName);
+                });
 
                 if (studentIndex != -1 &&
                     widget.records[studentIndex].status != AttendanceStatus.hadir) {
@@ -736,7 +747,10 @@ class _AttendanceScreenState extends State<AttendanceScreen>
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   InkWell(
-                    onTap: () => setState(() => _useServerEngine = false),
+                    onTap: () {
+                      setState(() => _useServerEngine = false);
+                      _startContinuousAutoScan();
+                    },
                     borderRadius: BorderRadius.circular(20),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
@@ -763,7 +777,10 @@ class _AttendanceScreenState extends State<AttendanceScreen>
                   ),
                   const SizedBox(width: 4),
                   InkWell(
-                    onTap: () => setState(() => _useServerEngine = true),
+                    onTap: () {
+                      setState(() => _useServerEngine = true);
+                      _startContinuousAutoScan();
+                    },
                     borderRadius: BorderRadius.circular(20),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
