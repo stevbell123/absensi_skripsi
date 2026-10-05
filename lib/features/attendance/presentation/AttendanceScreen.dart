@@ -732,87 +732,10 @@ class _AttendanceScreenState extends State<AttendanceScreen>
             ),
           ),
 
-          // Saklar Pilihan Mode (Dual-Engine: On-Device + CLAHE vs Server VPS YOLOv26)
-          Positioned(
-            top: 54,
-            child: Container(
-              padding: const EdgeInsets.all(3),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.65),
-                borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: Colors.white24, width: 1),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  InkWell(
-                    onTap: () {
-                      setState(() => _useServerEngine = false);
-                      _startContinuousAutoScan();
-                    },
-                    borderRadius: BorderRadius.circular(20),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: !_useServerEngine ? Colors.green.shade600 : Colors.transparent,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: const [
-                          Icon(Icons.bolt, size: 14, color: Colors.white),
-                          SizedBox(width: 4),
-                          Text(
-                            "⚡ On-Device + CLAHE",
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  InkWell(
-                    onTap: () {
-                      setState(() => _useServerEngine = true);
-                      _startContinuousAutoScan();
-                    },
-                    borderRadius: BorderRadius.circular(20),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: _useServerEngine ? Colors.blue.shade700 : Colors.transparent,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: const [
-                          Icon(Icons.cloud_sync, size: 14, color: Colors.white),
-                          SizedBox(width: 4),
-                          Text(
-                            "🌐 Server YOLOv26",
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
           // Notifikasi Pop-Up Hijau Saat Siswa Terdeteksi
           if (_latestRecognizedName != null)
             Positioned(
-              top: 98,
+              top: 54,
               child: AnimatedOpacity(
                 duration: const Duration(milliseconds: 300),
                 opacity: 1.0,
@@ -856,7 +779,85 @@ class _AttendanceScreenState extends State<AttendanceScreen>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Baris Ringkasan Jumlah Siswa Hadir & Chip Siswa yang Sudah Terabsen
+              // 1. Saklar Mode Mesin Absensi (Dipindah ke bawah agar layar kamera luas & lega)
+              Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.all(3),
+                decoration: BoxDecoration(
+                  color: Colors.white10,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: Colors.white24, width: 1),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: InkWell(
+                        onTap: () {
+                          setState(() => _useServerEngine = false);
+                          _startContinuousAutoScan();
+                        },
+                        borderRadius: BorderRadius.circular(20),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 7),
+                          decoration: BoxDecoration(
+                            color: !_useServerEngine ? Colors.green.shade600 : Colors.transparent,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: const [
+                              Icon(Icons.bolt, size: 15, color: Colors.white),
+                              SizedBox(width: 5),
+                              Text(
+                                "⚡ On-Device + CLAHE",
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: InkWell(
+                        onTap: () {
+                          setState(() => _useServerEngine = true);
+                          _startContinuousAutoScan();
+                        },
+                        borderRadius: BorderRadius.circular(20),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 7),
+                          decoration: BoxDecoration(
+                            color: _useServerEngine ? Colors.blue.shade700 : Colors.transparent,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: const [
+                              Icon(Icons.cloud_sync, size: 15, color: Colors.white),
+                              SizedBox(width: 5),
+                              Text(
+                                "🌐 Server YOLOv26",
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // 2. Baris Ringkasan Jumlah Siswa Hadir & Chip Siswa yang Sudah Terabsen
               Container(
                 margin: const EdgeInsets.only(bottom: 10),
                 child: Row(
