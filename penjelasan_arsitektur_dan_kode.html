@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Katalog & Penjelasan Lengkap Kode Program Sistem Absensi Wajah Cerdas (SIAP)</title>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-light: #60a5fa;
+      --secondary: #10b981;
+      --accent: #f59e0b;
+      --danger: #ef4444;
+      --dark: #0f172a;
+      --card-bg: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --code-bg: #090e1a;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--dark);
+      color: var(--text);
+      line-height: 1.7;
+      padding: 24px;
+    }
+    .container { max-width: 1150px; margin: 0 auto; }
+    header {
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 40px 24px;
+      text-align: center;
+      margin-bottom: 32px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+    }
+    h1 {
+      font-size: 2.2rem;
+      font-weight: 800;
+      background: linear-gradient(to right, #60a5fa, #34d399);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 12px;
+    }
+    .subtitle { color: var(--text-muted); font-size: 1.05rem; max-width: 850px; margin: 0 auto 16px auto; }
+    .badge-group { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+    .badge {
+      padding: 6px 14px;
+      border-radius: 9999px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      border: 1px solid transparent;
+    }
+    .badge-blue { background: rgba(37, 99, 235, 0.15); color: #60a5fa; border-color: rgba(37, 99, 235, 0.3); }
+    .badge-green { background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: rgba(16, 185, 129, 0.3); }
+    .badge-amber { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border-color: rgba(245, 158, 11, 0.3); }
+    .badge-purple { background: rgba(139, 92, 246, 0.15); color: #c084fc; border-color: rgba(139, 92, 246, 0.3); }
+
+    .card {
+      background-color: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 28px;
+      margin-bottom: 28px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+    }
+    h2 {
+      font-size: 1.45rem;
+      color: #93c5fd;
+      border-bottom: 2px solid var(--border);
+      padding-bottom: 10px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    h3 { font-size: 1.2rem; color: #38bdf8; margin: 24px 0 10px 0; }
+    h4 { font-size: 1.05rem; color: #a7f3d0; margin: 16px 0 8px 0; }
+    p { color: #cbd5e1; margin-bottom: 14px; font-size: 0.98rem; }
+    ul, ol { padding-left: 24px; margin-bottom: 16px; color: #cbd5e1; }
+    li { margin-bottom: 8px; }
+    strong { color: #f8fafc; }
+
+    .callout {
+      padding: 16px 20px;
+      border-radius: 10px;
+      margin: 18px 0;
+      border-left: 4px solid;
+    }
+    .callout-success { background: rgba(16, 185, 129, 0.1); border-color: #10b981; color: #a7f3d0; }
+    .callout-info { background: rgba(37, 99, 235, 0.1); border-color: #3b82f6; color: #bfdbfe; }
+    .callout-warning { background: rgba(245, 158, 11, 0.1); border-color: #f59e0b; color: #fde68a; }
+
+    .table-container { overflow-x: auto; margin: 20px 0; border-radius: 10px; border: 1px solid var(--border); }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.93rem; }
+    th { background-color: #0b1329; color: #93c5fd; padding: 14px 16px; font-weight: 700; border-bottom: 2px solid var(--border); }
+    td { padding: 12px 16px; border-bottom: 1px solid var(--border); color: #cbd5e1; vertical-align: top; }
+    tr:nth-child(even) { background-color: rgba(255, 255, 255, 0.02); }
+    tr:hover { background-color: rgba(255, 255, 255, 0.04); }
+
+    pre {
+      background-color: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      overflow-x: auto;
+      font-family: "JetBrains Mono", Consolas, Monaco, monospace;
+      font-size: 0.88rem;
+      color: #e2e8f0;
+      margin: 16px 0;
+    }
+    code {
+      font-family: "JetBrains Mono", Consolas, Monaco, monospace;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #93c5fd;
+      font-size: 0.9em;
+    }
+
+    .file-tag {
+      display: inline-block;
+      background: #1e3a8a;
+      color: #bfdbfe;
+      padding: 3px 10px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-family: monospace;
+      font-weight: bold;
+      margin-bottom: 8px;
+    }
+
+    footer {
+      text-align: center;
+      padding: 24px;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      border-top: 1px solid var(--border);
+      margin-top: 40px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Katalog & Penjelasan Lengkap Kode Program Sistem Absensi (SIAP)</h1>
+      <p class="subtitle">Bedah Total Seluruh File Kode Program, Modul AI, Fungsi-Fungsi Kunci, dan Peranan Algoritma dalam Sistem Presensi Wajah Cerdas (Cocok untuk <strong>BAB III Metodologi</strong> & <strong>BAB IV Implementasi Skripsi</strong>)</p>
+      <div class="badge-group">
+        <span class="badge badge-blue">Flutter 3.41 / Dart</span>
+        <span class="badge badge-green">Google ML Kit Fast</span>
+        <span class="badge badge-amber">Pure Dart CLAHE (BT.601)</span>
+        <span class="badge badge-purple">MobileFaceNet TFLite 192-d</span>
+        <span class="badge badge-blue">FastAPI Python</span>
+        <span class="badge badge-green">Ultralytics YOLOv26</span>
+        <span class="badge badge-amber">Firebase Cloud Firestore</span>
+        <span class="badge badge-purple">Hive Local DB</span>
+      </div>
+    </header>
+
+    <!-- SECTION 1: PETA ARSITEKTUR SELURUH FILE KODE -->
+    <div class="card">
+      <h2>1. Peta Seluruh Berkas Kode Program (File Directory Map)</h2>
+      <p>Sistem ini dirancang menggunakan arsitektur hibrida (*Dual-Engine*): client smartphone berbasis Flutter dan server inferensi berbasis FastAPI Python. Berikut adalah daftar seluruh file inti dan fungsinya:</p>
+
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Nama Berkas (File Path)</th>
+              <th>Bahasa / Framework</th>
+              <th>Modul Utama</th>
+              <th>Deskripsi Singkat & Fungsi Utama</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>lib/core/ai/face_detector_service.dart</code></td>
+              <td>Dart / Flutter</td>
+              <td>Edge AI (Vision)</td>
+              <td>Mendeteksi koordinat bounding box wajah siswa secara on-device via Google ML Kit (Fast Mode).</td>
+            </tr>
+            <tr>
+              <td><code>lib/core/ai/clahe_service.dart</code></td>
+              <td>Pure Dart</td>
+              <td>Pengolahan Citra Digital</td>
+              <td>Meningkatkan kontras lokal adaptif pada kanal Luminansi (Y) untuk mengatasi bayangan & backlight kelas.</td>
+            </tr>
+            <tr>
+              <td><code>lib/core/ai/face_embedding_service.dart</code></td>
+              <td>Dart / TFLite</td>
+              <td>Deep Learning Mobile</td>
+              <td>Memotong wajah (padding 15%), normalisasi [-1, 1], dan ekstraksi vektor 192 dimensi via MobileFaceNet TFLite.</td>
+            </tr>
+            <tr>
+              <td><code>lib/core/ai/face_matching_service.dart</code></td>
+              <td>Dart</td>
+              <td>Biometric Verification</td>
+              <td>Menghitung jarak Euclidean, mengurutkan kecocokan (Threshold ≤ 1.0), dan proteksi selisih minimal 0.06.</td>
+            </tr>
+            <tr>
+              <td><code>lib/core/ai/face_database_service.dart</code></td>
+              <td>Dart / Hive & Firestore</td>
+              <td>Database Sync</td>
+              <td>Menyimpan embedding wajah di Hive Box (offline-first) dan menyinkronkan dengan Cloud Firestore.</td>
+            </tr>
+            <tr>
+              <td><code>lib/features/attendance/presentation/AttendanceScreen.dart</code></td>
+              <td>Dart / Flutter UI</td>
+              <td>Live Scanner Presensi</td>
+              <td>Layar kamera presensi: auto-scan loop 600ms, saklar dual-engine di bawah layar, getaran haptic, dan auto-cleanup foto.</td>
+            </tr>
+            <tr>
+              <td><code>lib/features/academic_management/presentation/RegisterStudentScreen.dart</code></td>
+              <td>Dart / Flutter UI</td>
+              <td>Pendaftaran Siswa</td>
+              <td>Perekaman foto siswa baru, ekstraksi embedding 192-d seketika, dan penyimpanan ganda ke Firestore & Hive.</td>
+            </tr>
+            <tr>
+              <td><code>lib/features/attendance/presentation/attendance_view.dart</code></td>
+              <td>Dart / Flutter UI</td>
+              <td>Dashboard Absensi Guru</td>
+              <td>Memilih kelas & jadwal, melihat daftar hadir siswa, input status manual (Sakit/Izin/Alpa), dan tombol peluncur kamera AI.</td>
+            </tr>
+            <tr>
+              <td><code>server_guru/main.py</code></td>
+              <td>Python / FastAPI</td>
+              <td>Server AI YOLOv26</td>
+              <td>REST API server VPS: deteksi multi-wajah YOLOv26 (5-6 siswa), CIELAB CLAHE, MobileFaceNet CPU, dan async Firestore.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- SECTION 2: BEDAH DETAIL MODUL ON-DEVICE AI FLUTTER -->
+    <div class="card">
+      <h2>2. Bedah Detail Modul Edge AI (On-Device Flutter)</h2>
+
+      <!-- 2.1 FACE DETECTOR SERVICE -->
+      <span class="file-tag">lib/core/ai/face_detector_service.dart</span>
+      <h3>A. Kelas <code>FaceDetectorService</code> (Deteksi Wajah On-Device)</h3>
+      <p><strong>Tujuan:</strong> Mendeteksi letak wajah manusia pada frame kamera tanpa perlu mengirim gambar ke internet.</p>
+      
+      <h4>Fungsi-Fungsi Kunci:</h4>
+      <ul>
+        <li><code>FaceDetectorService()</code> (Konstruktor): Menginisialisasi objek <code>FaceDetector</code> dari paket <code>google_mlkit_face_detection</code> dengan konfigurasi kecepatan tinggi:
+          <pre><code>final options = FaceDetectorOptions(
+  enableContours: false,   // Mematikan kontur garis tepi wajah (menghemat memori)
+  enableLandmarks: false,  // Mematikan titik detail bibir/mata (menghemat CPU hingga 50%)
+  performanceMode: FaceDetectorMode.fast, // Mode fast ultra cepat (< 20 ms)
+  minFaceSize: 0.1,        // Mampu mendeteksi wajah siswa dari jarak kelas normal
+);
+_faceDetector = FaceDetector(options: options);</code></pre>
+        </li>
+        <li><code>Future&lt;List&lt;Face&gt;&gt; detectFaces(InputImage inputImage)</code>: Menerima citra frame kamera dan mengembalikan daftar objek <code>Face</code> yang berisi koordinat kotak pembatas (<em>Bounding Box</em>: left, top, right, bottom).</li>
+        <li><code>Future&lt;List&lt;Face&gt;&gt; detectFacesFromFile(String filePath)</code>: Pembungkus untuk memuat citra dari path file penyimpanan lokal sebelum diproses oleh <code>detectFaces</code>.</li>
+        <li><code>void dispose()</code>: Menutup aliran resource detector agar tidak terjadi kebocoran memori (<em>memory leak</em>).</li>
+      </ul>
+
+      <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
+
+      <!-- 2.2 CLAHE SERVICE -->
+      <span class="file-tag">lib/core/ai/clahe_service.dart</span>
+      <h3>B. Kelas <code>ClaheService</code> (Contrast Limited Adaptive Histogram Equalization)</h3>
+      <p><strong>Tujuan:</strong> Memperbaiki kontras citra wajah pada kondisi pencahayaan yang buruk (bayangan, backlight jendela, ruangan temaram) menggunakan implementasi murni bahasa Dart (<em>Pure Dart</em>) berkecepatan 3–5 milidetik.</p>
+      
+      <h4>Fungsi-Fungsi Kunci:</h4>
+      <ul>
+        <li><code>static img.Image applyClahe(img.Image src, {clipLimit = 2.0, gridSize = 8})</code>: Fungsi utama pemroses citra wajah ukuran 112×112 piksel.
+          <ol>
+            <li><strong>Ekstraksi Kanal Luminansi Y (Formula Standar ITU-R BT.601):</strong>
+              <pre><code>final int yVal = (0.299 * pixel.r + 0.587 * pixel.g + 0.114 * pixel.b).round().clamp(0, 255);</code></pre>
+              <em>Alasan Ilmiah:</em> CLAHE hanya dioperasikan pada komponen terang-gelap (Luminansi Y), bukan pada warna merah/hijau/biru (RGB). Ini menjamin rona warna kulit asli siswa tidak berubah dan tidak timbul artefak kemerahan.
+            </li>
+            <li><strong>Pembagian Blok Kontekstual 8×8 (Grid Tiles):</strong> Citra dibagi menjadi 64 petak kecil berukuran 14×14 piksel agar perataan kontras bersifat lokal adaptif.</li>
+            <li><strong>Kliping Histogram & Redistribusi (Clip Limit = 2.0):</strong>
+              <pre><code>final int clipThreshold = max(1, (clipLimit * (tilePixelCount / 256)).round());
+// Kelebihan piksel di atas ambang batas dipotong dan disebar merata ke 256 bin</code></pre>
+              Mencegah peningkatan kontras berlebih (<em>over-amplification</em>) yang dapat memunculkan derau (<em>noise</em>).
+            </li>
+            <li><strong>Interpolasi Bilinear 4 Tile:</strong> Menghitung nilai akhir piksel berdasarkan pembobotan jarak ke 4 pusat tile terdekat untuk menghilangkan garis batas petak (<em>blocking artifacts</em>).</li>
+          </ol>
+        </li>
+      </ul>
+
+      <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
+
+      <!-- 2.3 FACE EMBEDDING SERVICE -->
+      <span class="file-tag">lib/core/ai/face_embedding_service.dart</span>
+      <h3>C. Kelas <code>FaceEmbeddingService</code> (Ekstraksi Fitur MobileFaceNet)</h3>
+      <p><strong>Tujuan:</strong> Mengubah potongan wajah 112×112 piksel menjadi vektor representasi biometrik 192 angka desimal (<em>Feature Vector</em>).</p>
+
+      <h4>Fungsi-Fungsi Kunci:</h4>
+      <ul>
+        <li><code>Future&lt;void&gt; initialize()</code>: Memuat model AI berformat <code>assets/models/mobilefacenet.tflite</code> ke memori menggunakan <code>Interpreter.fromAsset()</code>.</li>
+        <li><code>img.Image cropAndAlignFace(img.Image fullImage, Rect boundingBox)</code>:
+          <pre><code>// Menambahkan margin 15% agar dagu dan kening tidak terpotong:
+final double paddingX = boundingBox.width * 0.15;
+final double paddingY = boundingBox.height * 0.15;
+// Memotong citra dan me-resize presisi ke 112x112 piksel</code></pre>
+        </li>
+        <li><code>List&lt;double&gt; extractEmbedding(img.Image faceImage, {bool applyClahe = true})</code>:
+          <ol>
+            <li>Menerapkan <code>ClaheService.applyClahe()</code> pada potongan 112×112 piksel.</li>
+            <li>Normalisasi rentang piksel standar model MobileFaceNet: <code>(pixel - 127.5) / 127.5</code> menghasilkan rentang <code>[-1.0, 1.0]</code>.</li>
+            <li>Membentuk tensor input berdimensi <code>[1, 112, 112, 3]</code> tipe <code>Float32List</code>.</li>
+            <li>Menjalankan inferensi model: <code>_interpreter.run(input, output)</code> menghasilkan 192 angka float.</li>
+            <li><strong>L2 Normalization (Unit Vector Hypersphere):</strong>
+              <pre><code>double norm = sqrt(sum(embedding[i] * embedding[i]));
+embedding[i] = embedding[i] / norm; // Panjang vektor tepat 1.0</code></pre>
+            </li>
+          </ol>
+        </li>
+      </ul>
+
+      <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
+
+      <!-- 2.4 FACE MATCHING SERVICE -->
+      <span class="file-tag">lib/core/ai/face_matching_service.dart</span>
+      <h3>D. Kelas <code>FaceMatchingService</code> (Verifikasi & Pencocokan Wajah)</h3>
+      <p><strong>Tujuan:</strong> Membandingkan vektor wajah yang baru tertangkap kamera dengan seluruh data vektor siswa yang ada di database.</p>
+
+      <h4>Konstanta & Parameter Ambang Batas:</h4>
+      <ul>
+        <li><code>static const double batasTerima = 1.0;</code>: Ambang batas jarak Euclidean maksimum. Karena vektor telah ternormalisasi L2, jarak 0.0 berarti 100% identik, dan jarak ≤ 1.0 dikategorikan sebagai orang yang sama.</li>
+        <li><code>static const double selisihMinimal = 0.06;</code>: Ambang batas selisih kandidat terbaik ke-1 vs ke-2 (<em>Margin Verification</em>). Mencegah salah presensi jika ada dua siswa yang memiliki kemiripan wajah tinggi.</li>
+      </ul>
+
+      <h4>Fungsi-Fungsi Kunci:</h4>
+      <ul>
+        <li><code>static double euclideanDistance(List&lt;double&gt; a, List&lt;double&gt; b)</code>: Menghitung jarak geometris ruang Euclidean:
+          <code>d = √( Σ (a[i] - b[i])² )</code>.
+        </li>
+        <li><code>static double cosineSimilarity(List&lt;double&gt; a, List&lt;double&gt; b)</code>: Menghitung kosinus sudut antar-dua vektor:
+          <code>cos(θ) = (a · b) / (||a|| ||b||)</code>.
+        </li>
+        <li><code>List&lt;MatchResult&gt; matchFaces(List&lt;List&lt;double&gt;&gt; embeddings, List&lt;List&lt;int&gt;&gt; boxes)</code>: Melakukan iterasi seluruh wajah yang tertangkap kamera, mencari siswa dengan jarak Euclidean terkecil, memeriksa aturan <code>selisihMinimal</code>, dan memastikan penugasan unik (1 siswa tidak bisa diabsen dobel di frame yang sama).</li>
+      </ul>
+
+      <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0;">
+
+      <!-- 2.5 FACE DATABASE SERVICE -->
+      <span class="file-tag">lib/core/ai/face_database_service.dart</span>
+      <h3>E. Kelas <code>FaceDatabaseService</code> (Sinkronisasi Offline-First)</h3>
+      <p><strong>Tujuan:</strong> Mengelola penyimpanan vektor biometrik siswa secara lokal di perangkat ponsel dan awan (Cloud).</p>
+
+      <h4>Fungsi-Fungsi Kunci:</h4>
+      <ul>
+        <li><code>Future&lt;void&gt; saveEmbedding(nim, name, embedding)</code>: Menyimpan vektor 192 dimensi ke koleksi <code>face_embeddings</code> di Cloud Firestore dan memperbarui cache lokal Hive.</li>
+        <li><code>Future&lt;List&lt;FaceRecord&gt;&gt; syncByClass(String classId)</code>: Mengunduh data biometrik seluruh siswa dalam kelas tertentu dari Firestore lalu menyimpannya ke <strong>Hive DB</strong> di penyimpanan internal ponsel.</li>
+        <li><code>Future&lt;List&lt;FaceRecord&gt;&gt; loadFromLocal()</code>: Membaca data siswa langsung dari memori lokal Hive. Memungkinkan absensi berjalan **100% tanpa internet (Offline)**.</li>
+      </ul>
+    </div>
+
+    <!-- SECTION 3: BEDAH DETAIL MODUL UI PRESENSI -->
+    <div class="card">
+      <h2>3. Bedah Detail Modul Antarmuka Kamera & Presensi (UI)</h2>
+
+      <span class="file-tag">lib/features/attendance/presentation/AttendanceScreen.dart</span>
+      <h3>A. Layar Kamera Presensi Cerdas (<code>AttendanceScreen</code>)</h3>
+      <p><strong>Tujuan:</strong> Mengelola pratinjau kamera langsung (<em>Live Camera Preview</em>), menjalankan loop pemindaian otomatis, memberikan umpan balik visual & getaran, dan menyediakan saklar pemilihan mesin (<em>Dual-Engine Switch</em>).</p>
+
+      <h4>Variabel & State Kunci:</h4>
+      <ul>
+        <li><code>bool _useServerEngine</code>: Saklar logika. Bernilai <code>false</code> untuk Mode ⚡ On-Device + CLAHE, dan <code>true</code> untuk Mode 🌐 Server YOLOv26.</li>
+        <li><code>bool _isAutoScan</code>: Menentukan apakah pemindaian berjalan kontinu otomatis atau dijeda.</li>
+        <li><code>Timer? _autoScanTimer</code>: Pewaktu periodik pemicu pemrosesan frame kamera.</li>
+      </ul>
+
+      <h4>Fungsi-Fungsi Kunci:</h4>
+      <ul>
+        <li><code>void _startContinuousAutoScan()</code>: Mengatur kecepatan siklus pemindaian secara adaptif:
+          <pre><code>// On-Device sangat cepat (600 ms), Server diberi jeda 1400 ms agar jaringan 4G stabil
+final int intervalMs = _useServerEngine ? 1400 : 600;
+_autoScanTimer = Timer.periodic(Duration(milliseconds: intervalMs), (timer) {
+  if (!_isScanningCycle && _isAiReady && mounted) {
+    _runAutoScanCycle();
+  }
+});</code></pre>
+        </li>
+        <li><code>Future&lt;void&gt; _runAutoScanCycle()</code>: Fungsi orkestrator utama:
+          <ol>
+            <li>Memanggil <code>_controller.takePicture()</code> untuk menangkap frame kamera.</li>
+            <li>Jika <code>_useServerEngine == true</code>, memanggil <code>_runServerScan(picture.path)</code>.</li>
+            <li>Jika <code>_useServerEngine == false</code>:
+              <ul>
+                <li>Menjalankan <code>_detectorService.detectFaces()</code>.</li>
+                <li>Mengekstrak embedding via <code>_embeddingService.extractEmbedding()</code>.</li>
+                <li>Mencocokkan via <code>_matchingService.matchFaces()</code>.</li>
+                <li>Jika siswa cocok: memperbarui status <code>AttendanceStatus.hadir</code>, menggetarkan ponsel (<code>HapticFeedback.mediumImpact()</code>), dan menampilkan pop-up hijau <code>🎉 [Nama Siswa] (Hadir)!</code>.</li>
+              </ul>
+            </li>
+            <li><strong>Pembersihan Cache File Foto Otomatis:</strong>
+              <pre><code>try {
+  final f = File(picture.path);
+  if (await f.exists()) await f.delete(); // Menghapus file foto agar penyimpanan ponsel tidak penuh
+} catch (_) {}</code></pre>
+            </li>
+          </ol>
+        </li>
+        <li><code>Future&lt;void&gt; _runServerScan(String filePath)</code>: Melakukan kompresi citra ke 1280px (~85 KB) menggunakan pustaka <code>image</code>, lalu mengirimkannya via HTTP POST Multipart ke alamat IP VPS (<code>http://103.175.206.22:8001/api/scan-attendance</code>).</li>
+        <li><code>Widget build(BuildContext context)</code>: Menyusun tampilan antarmuka:
+          <ul>
+            <li><strong>Layar Kamera Penuh (Full Viewport):</strong> Bebas dari tombol yang melayang di tengah layar agar sudut pandang luas dan seragam/baju siswa tidak menghalangi deteksi.</li>
+            <li><strong>Panel Kontrol Bawah (<code>bottomNavigationBar</code>):</strong> Menampung saklar mode mesin, ringkasan kehadiran siswa, tombol jeda/lanjut, dan tombol selesai absensi.</li>
+          </ul>
+        </li>
+      </ul>
+    </div>
+
+    <!-- SECTION 4: BEDAH DETAIL MODUL BACKEND SERVER (YOLOv26) -->
+    <div class="card">
+      <h2>4. Bedah Detail Modul Server AI Cloud (FastAPI + YOLOv26)</h2>
+
+      <span class="file-tag">server_guru/main.py</span>
+      <h3>A. Server AI Terpusat (<code>server_guru/main.py</code>)</h3>
+      <p><strong>Tujuan:</strong> Menjalankan pemrosesan citra tingkat lanjut di server VPS Ubuntu untuk absensi rombongan 5–6 siswa sekaligus dalam satu jepretan kamera.</p>
+
+      <h4>Fungsi-Fungsi Kunci:</h4>
+      <ul>
+        <li><code>perbaiki_orientasi_gambar(gambar_bytes)</code>: Membaca tag EXIF kamera ponsel, mengoreksi rotasi foto (portrait/landscape), me-resize ukuran maksimum ke 1280 piksel, dan mengaplikasikan CLAHE pada kanal L (CIELAB).</li>
+        <li><code>terapkan_clahe(gambar_rgb)</code>: Mengubah ruang warna RGB ke CIELAB, lalu menerapkan algoritma OpenCV:
+          <pre><code>clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+l_clahe = clahe.apply(l)
+# Menggabungkan kembali L hasil CLAHE dengan kanal a dan b asli</code></pre>
+        </li>
+        <li><code>deteksi_dan_crop_wajah(gambar_rgb)</code>: Menggunakan model <strong>Ultralytics YOLOv26</strong> (<code>yolo26n.pt</code>) dengan ambang keyakinan <code>YOLO_CONFIDENCE = 0.25</code> untuk mendeteksi seluruh koordinat wajah siswa di dalam foto secara simultan.</li>
+        <li><code>ekstrak_embedding_tflite(gambar_wajah)</code>: Me-resize potongan wajah menggunakan interpolasi <strong>Lanczos4</strong> (<code>cv2.INTER_LANCZOS4</code>) ke 112×112 piksel, normalisasi <code>(pixel - 127.5) / 128.0</code>, dan mengeksekusi MobileFaceNet TFLite pada CPU VPS untuk menghasilkan vektor 192 dimensi.</li>
+        <li><code>cocokkan_dengan_kelas(vektor_wajah, class_id)</code>: Algoritma pencocokan Cosine Similarity:
+          <pre><code>COSINE_THRESHOLD = 0.28  # Ambang batas penerimaan kehadiran
+SELISIH_MINIMAL = 0.06   # Proteksi selisih juara 1 vs juara 2 (Anti-Salah Orang)</code></pre>
+        </li>
+        <li><code>simpan_absensi_firestore(siswa_dikenali)</code>: Menyimpan catatan kehadiran ke Firestore secara asinkron menggunakan <code>asyncio.to_thread</code> di background thread agar tidak menahan respon HTTP ke ponsel.</li>
+        <li>Endpoint <code>@app.post("/api/scan-attendance")</code>: Menerima unggahan foto absensi dari aplikasi ponsel dan mengembalikan respon JSON daftar siswa yang berhasil dikenali dalam waktu &lt; 1 detik.</li>
+      </ul>
+    </div>
+
+    <!-- SECTION 5: MODEL DATA & FIRESTORE SCHEMA -->
+    <div class="card">
+      <h2>5. Skema Basis Data & Koleksi Firestore (Database Architecture)</h2>
+      <p>Struktur dokumen JSON yang tersimpan pada basis data NoSQL Cloud Firestore:</p>
+
+      <h3>A. Koleksi <code>face_embeddings</code> (Vektor Biometrik Siswa)</h3>
+      <pre><code>// Document ID: Nomor Induk Siswa / NIM (Contoh: "220101001")
+{
+  "nim": "220101001",
+  "name": "Fajar Nugraha",
+  "classId": "kelas_5a",
+  "embedding": [
+    0.0452, -0.1124, 0.0891, ..., // 192 nilai desimal float32
+  ],
+  "updatedAt": "2026-10-05T08:30:00Z" // Server Timestamp
+}</code></pre>
+
+      <h3>B. Koleksi <code>absensi_harian</code> (Catatan Presensi Real-Time)</h3>
+      <pre><code>// Document ID: Tanggal Pertemuan (Contoh: "2026-10-05")
+{
+  "tanggal": "2026-10-05",
+  "kehadiran": {
+    "220101001": {
+      "nama": "Fajar Nugraha",
+      "nim": "220101001",
+      "waktu": "07:15:22",
+      "status": "hadir",
+      "similarity": 0.4059,
+      "metode": "On-Device + CLAHE"
+    }
+  }
+}</code></pre>
+    </div>
+
+    <footer>
+      <p>&copy; 2026 Proyek Skripsi Sistem Absensi Wajah Cerdas (SIAP). Dokumen dibuat secara otomatis sebagai panduan resmi penulisan Bab III & Bab IV Skripsi.</p>
+    </footer>
+  </div>
+</body>
+</html>
