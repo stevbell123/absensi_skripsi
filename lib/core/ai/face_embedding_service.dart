@@ -54,8 +54,13 @@ class FaceEmbeddingService {
       height: finalHeight,
     );
 
-    // Mengubah ukuran gambar menjadi 112x112 sesuai input yang dibutuhkan MobileFaceNet
-    return img.copyResize(croppedFace, width: 112, height: 112);
+    // Mengubah ukuran gambar menjadi 112x112 dengan interpolasi Bicubic (menjaga ketajaman fitur wajah dari jarak jauh)
+    return img.copyResize(
+      croppedFace,
+      width: 112,
+      height: 112,
+      interpolation: img.Interpolation.cubic,
+    );
   }
 
   /// Mengekstraksi vektor embedding dari gambar wajah berukuran 112x112.

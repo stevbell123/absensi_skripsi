@@ -33,9 +33,8 @@ class MatchResult {
 
 class FaceMatchingService {
   // Ambang batas jarak maksimum untuk menerima kecocokan wajah.
-  // Nilai lebih rendah = lebih ketat (harus sangat mirip).
-  // Mulai dari 1.0 dan sesuaikan berdasarkan pengujian dengan MobileFaceNet.
-  static const double batasTerima = 1.0; 
+  // 1.06 dioptimalkan agar peka mengenali wajah dari jarak jauh (2.5 s.d. 3.5 meter).
+  static const double batasTerima = 1.06; 
 
   // Selisih minimal antara kecocokan terbaik (pertama) dan kedua.
   // Mencegah ambiguitas (wajah yang mirip dengan dua orang di database).
