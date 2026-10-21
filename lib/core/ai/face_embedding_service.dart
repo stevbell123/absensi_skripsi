@@ -64,8 +64,16 @@ class FaceEmbeddingService {
   }
 
   /// Mengekstraksi vektor embedding dari gambar wajah berukuran 112x112.
-  /// Secara default menerapkan pra-pemrosesan CLAHE pada kanal Luminansi (~3-5 ms).
-  List<double> extractEmbedding(img.Image faceImage, {bool applyClahe = true}) {
+  /// Secara default menerapkan pra-pemrosesan CLAHE pada kanal Luminansi.
+  ///
+  /// Jika [waktu] diisi, durasi tiap tahap dicatat (milidetik) untuk analisis latensi:
+  /// - 'clahe_ms'     : waktu pra-pemrosesan CLAHE (0 jika CLAHE dimatikan)
+  /// - 'embedding_ms' : waktu penyusunan tensor + inferensi MobileFaceNet + normalisasi L2
+  List<double> extractEmbedding(
+    img.Image faceImage, {
+    bool applyClahe = true,
+    Map<String, double>? waktu,
+  }) {
     if (_interpreter == null) {
       throw Exception('FaceEmbeddingService: Interpreter belum diinisialisasi');
     }
@@ -78,9 +86,14 @@ class FaceEmbeddingService {
 
     // Menerapkan Contrast Limited Adaptive Histogram Equalization (CLAHE)
     // untuk menstabilkan kontras pada area bayangan/backlight di ruang kelas
+    final stopwatch = Stopwatch()..start();
     if (applyClahe) {
       resizedImage = ClaheService.applyClahe(resizedImage);
     }
+    waktu?['clahe_ms'] = stopwatch.elapsedMicroseconds / 1000.0;
+    stopwatch
+      ..reset()
+      ..start();
 
     // Membuat tensor input shape [1, 112, 112, 3]
     var input = List.generate(
@@ -135,6 +148,7 @@ class FaceEmbeddingService {
       }
     }
 
+    waktu?['embedding_ms'] = stopwatch.elapsedMicroseconds / 1000.0;
     return embedding;
   }
 

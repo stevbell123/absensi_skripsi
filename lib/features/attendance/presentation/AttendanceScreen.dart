@@ -26,15 +26,21 @@ import '../../../core/ai/face_detector_service.dart';
 import '../../../core/ai/face_embedding_service.dart';
 import '../../../core/ai/face_matching_service.dart';
 import '../../../core/ai/face_database_service.dart';
+import '../../research/research_config.dart';
+import '../../research/research_logger.dart';
+import '../../research/presentation/research_settings_sheet.dart';
 
 class AttendanceScreen extends StatefulWidget {
   final List<AttendanceRecord> records;
   final String classId;
+  // ID sesi absensi (Mode Penelitian) agar log wajah bisa dikaitkan dengan log sesi
+  final String? sesiId;
 
   const AttendanceScreen({
     Key? key,
     required this.records,
     required this.classId,
+    this.sesiId,
   }) : super(key: key);
 
   @override
@@ -135,13 +141,13 @@ class _AttendanceScreenState extends State<AttendanceScreen>
       }
 
       _matchingService.loadDatabase(records);
+      await ResearchConfig.load();
+      ResearchConfig.terapkanKe(_matchingService);
 
       if (mounted) {
         setState(() {
           _isAiReady = true;
-          _statusText = records.isNotEmpty
-              ? '✅ Siap Pindai (${records.length} siswa dimuat)'
-              : '⚠️ 0 Siswa (Daftarkan wajah dahulu)';
+          _statusText = _teksStatusSiap();
         });
       }
 
@@ -151,6 +157,44 @@ class _AttendanceScreenState extends State<AttendanceScreen>
       if (mounted) setState(() => _statusText = '❌ Error: $e');
       debugPrint('[AI] Gagal inisialisasi: $e');
     }
+  }
+
+  String _teksStatusSiap() {
+    final total = _matchingService.totalSiswa;
+    if (total == 0) return '⚠️ 0 Siswa (Daftarkan wajah dahulu)';
+    if (!ResearchConfig.efektifClahe) {
+      // Mode tanpa CLAHE hanya bisa memakai siswa yang didaftarkan ulang (punya embedding non-CLAHE)
+      return '🧪 Tanpa CLAHE: ${_matchingService.totalSiswaTanpaClahe}/$total siswa siap';
+    }
+    return '✅ Siap Pindai ($total siswa dimuat)';
+  }
+
+  Future<void> _bukaPengaturanPenelitian() async {
+    await tampilkanPengaturanPenelitian(context);
+    ResearchConfig.terapkanKe(_matchingService);
+    if (mounted && _isAiReady) setState(() => _statusText = _teksStatusSiap());
+  }
+
+  /// Mencari siswa di daftar hadir untuk hasil pengenalan wajah.
+  /// Logika pencocokan nama longgar dipertahankan; 'cocokVia' dicatat agar
+  /// pengaruhnya terhadap MIR bisa dianalisis terpisah.
+  ({int index, String cocokVia}) _cariSiswa(String nim, String nama) {
+    final resName = nama.toLowerCase().trim();
+    final resFirstName = resName.split(' ').first;
+    final index = widget.records.indexWhere((r) {
+      final recName = r.studentName.toLowerCase().trim();
+      final recFirstName = recName.split(' ').first;
+      return r.studentId == nim ||
+          recName == resName ||
+          (resName.isNotEmpty && recName.contains(resName)) ||
+          (recName.isNotEmpty && resName.contains(recName)) ||
+          (resFirstName.length >= 3 && resFirstName == recFirstName);
+    });
+    if (index == -1) return (index: -1, cocokVia: 'tidak_ada');
+    return (
+      index: index,
+      cocokVia: widget.records[index].studentId == nim ? 'nim' : 'nama',
+    );
   }
 
   // =========================================================================
@@ -342,25 +386,40 @@ class _AttendanceScreenState extends State<AttendanceScreen>
         await _runServerScan(picture.path);
       } else {
         // MODE 1: Eksekusi On-Device AI di HP (Google ML Kit + On-Device CLAHE + MobileFaceNet)
+        // Stopwatch mengukur latensi tiap tahap untuk analisis RM 1 (Mode Penelitian)
+        final bool gunakanClahe = ResearchConfig.efektifClahe;
+        final sw = Stopwatch()..start();
+
         final inputImage = InputImage.fromFilePath(picture.path);
         final faces = await _detectorService.detectFaces(inputImage);
+        final double tDeteksi = sw.elapsedMicroseconds / 1000.0;
 
         if (faces.isNotEmpty) {
+          sw..reset()..start();
           final imageBytes = await File(picture.path).readAsBytes();
           final rawImage = img.decodeImage(imageBytes);
 
           if (rawImage != null) {
             // Selaraskan orientasi rotasi kamera secara otomatis (aman untuk mode lanskap)
             final fullImage = img.bakeOrientation(rawImage);
+            final double tDecode = sw.elapsedMicroseconds / 1000.0;
 
             List<List<double>> allEmbeddings = [];
             List<List<int>> allBoxes = [];
+            final List<Map<String, double>> waktuPerWajah = [];
 
             for (final face in faces) {
               final bbox = face.boundingBox;
+              sw..reset()..start();
               final croppedFace = _embeddingService.cropAndAlignFace(fullImage, bbox);
-              // Ekstraksi embedding dengan On-Device CLAHE aktif di HP
-              final embedding = _embeddingService.extractEmbedding(croppedFace);
+              final waktu = <String, double>{'crop_ms': sw.elapsedMicroseconds / 1000.0};
+              // Ekstraksi embedding dengan On-Device CLAHE (bisa dimatikan di Mode Penelitian)
+              final embedding = _embeddingService.extractEmbedding(
+                croppedFace,
+                applyClahe: gunakanClahe,
+                waktu: waktu,
+              );
+              waktuPerWajah.add(waktu);
               allEmbeddings.add(embedding);
               allBoxes.add([
                 bbox.left.toInt(),
@@ -371,22 +430,56 @@ class _AttendanceScreenState extends State<AttendanceScreen>
             }
 
             // Pencocokan vektor embedding terhadap database
+            sw..reset()..start();
             final results = _matchingService.matchFaces(allEmbeddings, allBoxes);
+            final double tMatching = sw.elapsedMicroseconds / 1000.0;
             List<String> newlyRecognizedNames = [];
+            final List<Map<String, dynamic>> logWajah = [];
+
+            final double tFrame = tDeteksi +
+                tDecode +
+                waktuPerWajah.fold<double>(
+                    0,
+                    (s, w) =>
+                        s + (w['crop_ms'] ?? 0.0) + (w['clahe_ms'] ?? 0.0) + (w['embedding_ms'] ?? 0.0)) +
+                tMatching;
 
             for (var result in results) {
-              if (result.nim != "Unknown") {
-                final studentIndex = widget.records.indexWhere((r) {
-                  final recName = r.studentName.toLowerCase().trim();
-                  final resName = result.name.toLowerCase().trim();
-                  final resFirstName = resName.split(' ').first;
-                  final recFirstName = recName.split(' ').first;
-                  return r.studentId == result.nim ||
-                      recName == resName ||
-                      (resName.isNotEmpty && recName.contains(resName)) ||
-                      (recName.isNotEmpty && resName.contains(recName)) ||
-                      (resFirstName.length >= 3 && resFirstName == recFirstName);
+              final pencarian = result.nim != "Unknown"
+                  ? _cariSiswa(result.nim, result.name)
+                  : (index: -1, cocokVia: '');
+
+              if (ResearchConfig.aktif) {
+                final w = waktuPerWajah[result.faceIndex];
+                logWajah.add({
+                  'waktu': ResearchLogger.waktuSekarang(),
+                  'sumber': 'live',
+                  'sesi_id': widget.sesiId ?? '',
+                  'kondisi_cahaya': ResearchConfig.kondisiCahaya,
+                  'clahe': gunakanClahe ? 1 : 0,
+                  'mode_verifikasi': ResearchConfig.labelVerifikasi,
+                  'ambang': _matchingService.ambang,
+                  'margin': _matchingService.margin,
+                  'jumlah_wajah': faces.length,
+                  'indeks_wajah': result.faceIndex,
+                  ...ResearchLogger.kolomKeputusan(result,
+                      ambang: _matchingService.ambang, margin: _matchingService.margin),
+                  'nim_daftar_hadir': pencarian.index != -1
+                      ? widget.records[pencarian.index].studentId
+                      : '',
+                  'cocok_via': pencarian.cocokVia,
+                  't_deteksi_ms': ResearchLogger.ms(tDeteksi),
+                  't_decode_ms': ResearchLogger.ms(tDecode),
+                  't_crop_ms': ResearchLogger.ms(w['crop_ms'] ?? 0.0),
+                  't_clahe_ms': ResearchLogger.ms(w['clahe_ms'] ?? 0.0),
+                  't_embedding_ms': ResearchLogger.ms(w['embedding_ms'] ?? 0.0),
+                  't_matching_ms': ResearchLogger.ms(tMatching),
+                  't_frame_ms': ResearchLogger.ms(tFrame),
                 });
+              }
+
+              if (result.nim != "Unknown") {
+                final studentIndex = pencarian.index;
 
                 if (studentIndex != -1 &&
                     widget.records[studentIndex].status != AttendanceStatus.hadir) {
@@ -401,13 +494,19 @@ class _AttendanceScreenState extends State<AttendanceScreen>
               }
             }
 
+            if (logWajah.isNotEmpty) {
+              unawaited(ResearchLogger.catatWajah(logWajah));
+            }
+
             // Notifikasi visual & getaran jika ada siswa (1 atau lebih) yang berhasil diabsen
             if (newlyRecognizedNames.isNotEmpty) {
               HapticFeedback.mediumImpact();
               if (mounted) {
                 setState(() {
                   if (newlyRecognizedNames.length == 1) {
-                    _latestRecognizedName = "${newlyRecognizedNames.first} (On-Device + CLAHE)";
+                    _latestRecognizedName = gunakanClahe
+                        ? "${newlyRecognizedNames.first} (On-Device + CLAHE)"
+                        : "${newlyRecognizedNames.first} (On-Device)";
                   } else if (newlyRecognizedNames.length == 2) {
                     _latestRecognizedName = "${newlyRecognizedNames[0]} & ${newlyRecognizedNames[1]}";
                   } else {
@@ -505,6 +604,8 @@ class _AttendanceScreenState extends State<AttendanceScreen>
 
   @override
   void dispose() {
+    // Kirim sisa antrean log penelitian ke Firestore (CSV lokal sudah tersimpan)
+    if (ResearchConfig.aktif) unawaited(ResearchLogger.kirimKeFirestore());
     _autoScanTimer?.cancel();
     _bannerTimer?.cancel();
     _laserController.dispose();
@@ -568,6 +669,12 @@ class _AttendanceScreenState extends State<AttendanceScreen>
         backgroundColor: Colors.indigo,
         foregroundColor: Colors.white,
         actions: [
+          IconButton(
+            icon: Icon(Icons.science,
+                color: ResearchConfig.aktif ? Colors.amberAccent : Colors.white),
+            tooltip: 'Mode Penelitian',
+            onPressed: _bukaPengaturanPenelitian,
+          ),
           IconButton(
             icon: const Icon(Icons.flip_camera_ios),
             tooltip: 'Tukar Kamera',
@@ -805,12 +912,14 @@ class _AttendanceScreenState extends State<AttendanceScreen>
                           ),
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.center,
-                            children: const [
-                              Icon(Icons.bolt, size: 15, color: Colors.white),
-                              SizedBox(width: 5),
+                            children: [
+                              const Icon(Icons.bolt, size: 15, color: Colors.white),
+                              const SizedBox(width: 5),
                               Text(
-                                "⚡ On-Device + CLAHE",
-                                style: TextStyle(
+                                ResearchConfig.aktif
+                                    ? "⚡ ${ResearchConfig.labelKonfigurasi}"
+                                    : "⚡ On-Device + CLAHE",
+                                style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 11.5,
                                   fontWeight: FontWeight.bold,

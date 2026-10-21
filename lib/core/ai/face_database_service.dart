@@ -3,7 +3,7 @@ import 'package:hive/hive.dart';
 import 'face_matching_service.dart';
 
 /// Service untuk menangani sinkronisasi embedding wajah antara Firestore (cloud) dan penyimpanan lokal (Hive).
-/// 
+///
 /// Strategi Sinkronisasi:
 /// - Saat registrasi wajah: embedding langsung disimpan ke Firestore.
 /// - Sebelum scan absensi: sinkronisasi embedding untuk kelas tersebut (unduh dari Firestore → cache ke Hive).
@@ -22,17 +22,52 @@ class FaceDatabaseService {
     }
   }
 
-  /// Menyimpan embedding baru ke penyimpanan lokal (Hive) dan Firestore (Cloud)
-  Future<void> saveEmbedding(String nim, String name, List<double> embedding) async {
+  /// Mengubah data mentah (Firestore / Hive) menjadi FaceRecord.
+  /// Firestore menyimpan array angka sebagai List<dynamic>, sehingga dikonversi ke List<double>.
+  static FaceRecord _recordDariMap(Map<dynamic, dynamic> data) {
+    final List<dynamic> embeddingDynamic = data['embedding'] ?? [];
+    final List<dynamic>? tanpaClaheDynamic = data['embedding_tanpa_clahe'];
+
+    return FaceRecord(
+      nim: data['nim'] as String,
+      name: data['name'] as String,
+      embedding: embeddingDynamic.map((e) => (e as num).toDouble()).toList(),
+      embeddingTanpaClahe:
+          tanpaClaheDynamic?.map((e) => (e as num).toDouble()).toList(),
+    );
+  }
+
+  /// Format penyimpanan cache Hive untuk satu FaceRecord
+  static Map<String, dynamic> _mapCache(FaceRecord record) {
+    return {
+      'nim': record.nim,
+      'name': record.name,
+      'embedding': record.embedding,
+      if (record.embeddingTanpaClahe != null)
+        'embedding_tanpa_clahe': record.embeddingTanpaClahe,
+    };
+  }
+
+  /// Menyimpan embedding baru ke penyimpanan lokal (Hive) dan Firestore (Cloud).
+  /// [embeddingTanpaClahe] adalah embedding foto yang sama tanpa CLAHE (untuk eksperimen RM 1).
+  Future<void> saveEmbedding(
+    String nim,
+    String name,
+    List<double> embedding, {
+    List<double>? embeddingTanpaClahe,
+  }) async {
+    final record = FaceRecord(
+      nim: nim,
+      name: name,
+      embedding: embedding,
+      embeddingTanpaClahe: embeddingTanpaClahe,
+    );
+
     // 1. Simpan ke Hive box dulu agar lokal on-device SELALU punya datanya
     try {
       await initHive();
       final box = Hive.box(_hiveBoxName);
-      await box.put(nim, {
-        'nim': nim,
-        'name': name,
-        'embedding': embedding,
-      });
+      await box.put(nim, _mapCache(record));
       print('[FaceDatabaseService] ✅ Embedding tersimpan di penyimpanan lokal (Hive).');
     } catch (e) {
       print('[FaceDatabaseService] ⚠️ Gagal simpan ke Hive: $e');
@@ -41,9 +76,7 @@ class FaceDatabaseService {
     // 2. Simpan ke Firestore (Cloud)
     try {
       await _firestore.collection(_firestoreCollection).doc(nim).set({
-        'nim': nim,
-        'name': name,
-        'embedding': embedding,
+        ..._mapCache(record),
         'updatedAt': FieldValue.serverTimestamp(),
       });
       print('[FaceDatabaseService] ✅ Embedding tersimpan di Firestore.');
@@ -62,7 +95,7 @@ class FaceDatabaseService {
   /// dan mengembalikan daftar FaceRecord.
   Future<List<FaceRecord>> syncFromFirestore() async {
     final snapshot = await _firestore.collection(_firestoreCollection).get();
-    
+
     await initHive();
     final box = Hive.box(_hiveBoxName);
     await box.clear(); // Bersihkan cache lama
@@ -70,28 +103,11 @@ class FaceDatabaseService {
     List<FaceRecord> records = [];
 
     for (var doc in snapshot.docs) {
-      final data = doc.data();
-      final nim = data['nim'] as String;
-      final name = data['name'] as String;
-      
-      // Firestore menyimpan array angka sebagai List<dynamic>, konversi ke List<double>
-      final List<dynamic> embeddingDynamic = data['embedding'] ?? [];
-      final List<double> embedding = embeddingDynamic.map((e) => (e as num).toDouble()).toList();
-
-      final record = FaceRecord(
-        nim: nim,
-        name: name,
-        embedding: embedding,
-      );
-
+      final record = _recordDariMap(doc.data());
       records.add(record);
-      
+
       // Simpan ke Hive sebagai map
-      await box.put(nim, {
-        'nim': nim,
-        'name': name,
-        'embedding': embedding,
-      });
+      await box.put(record.nim, _mapCache(record));
     }
 
     return records;
@@ -143,28 +159,11 @@ class FaceDatabaseService {
           .get();
 
       for (var doc in snapshot.docs) {
-        final data = doc.data();
-        final nim = data['nim'] as String;
-        final name = data['name'] as String;
-
-        final List<dynamic> embeddingDynamic = data['embedding'] ?? [];
-        final List<double> embedding =
-            embeddingDynamic.map((e) => (e as num).toDouble()).toList();
-
-        final record = FaceRecord(
-          nim: nim,
-          name: name,
-          embedding: embedding,
-        );
-
+        final record = _recordDariMap(doc.data());
         records.add(record);
 
         // Simpan ke Hive
-        await box.put(nim, {
-          'nim': nim,
-          'name': name,
-          'embedding': embedding,
-        });
+        await box.put(record.nim, _mapCache(record));
       }
     }
 
@@ -179,17 +178,7 @@ class FaceDatabaseService {
 
     for (var key in box.keys) {
       final data = box.get(key) as Map<dynamic, dynamic>;
-      final nim = data['nim'] as String;
-      final name = data['name'] as String;
-      
-      final List<dynamic> embeddingDynamic = data['embedding'];
-      final List<double> embedding = embeddingDynamic.map((e) => (e as num).toDouble()).toList();
-
-      records.add(FaceRecord(
-        nim: nim,
-        name: name,
-        embedding: embedding,
-      ));
+      records.add(_recordDariMap(data));
     }
 
     return records;

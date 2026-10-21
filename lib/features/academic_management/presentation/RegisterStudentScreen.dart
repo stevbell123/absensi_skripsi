@@ -211,8 +211,12 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
   //   2. Validasi: harus tepat 1 wajah
   //   3. Crop → MobileFaceNet → embedding 128-d
   //   4. Simpan embedding ke list sementara
+  //
+  // Mengembalikan 2 embedding dari foto yang sama: dengan CLAHE (dipakai
+  // absensi normal) dan tanpa CLAHE (pembanding eksperimen RM 1).
   // =========================================================================
-  Future<List<double>?> _processOnePhoto(String filePath) async {
+  Future<({List<double> denganClahe, List<double> tanpaClahe})?> _processOnePhoto(
+      String filePath) async {
     // 1. Deteksi wajah menggunakan ML Kit
     final inputImage = InputImage.fromFilePath(filePath);
     final faces = await _detectorService.detectFaces(inputImage);
@@ -256,9 +260,11 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
       dominantFace.boundingBox,
     );
     final embedding = _embeddingService.extractEmbedding(croppedFace);
+    final embeddingTanpaClahe =
+        _embeddingService.extractEmbedding(croppedFace, applyClahe: false);
 
     debugPrint('[AI] Embedding dominan berhasil dihitung (${embedding.length}-d)');
-    return embedding;
+    return (denganClahe: embedding, tanpaClahe: embeddingTanpaClahe);
   }
 
   // =========================================================================
@@ -333,7 +339,12 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
       }
 
       // 3. Simpan embedding ke database lokal (Hive) & Firestore (Cloud)
-      await _databaseService.saveEmbedding(nim, name, embedding);
+      await _databaseService.saveEmbedding(
+        nim,
+        name,
+        embedding.denganClahe,
+        embeddingTanpaClahe: embedding.tanpaClahe,
+      );
 
       // 4. Simpan thumbnail foto siswa ke Firestore (non-fatal jika permission tertutup)
       try {
@@ -394,7 +405,12 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
       }
 
       // 1. Simpan embedding ke Hive lokal & Firestore
-      await _databaseService.saveEmbedding(nim, name, embedding);
+      await _databaseService.saveEmbedding(
+        nim,
+        name,
+        embedding.denganClahe,
+        embeddingTanpaClahe: embedding.tanpaClahe,
+      );
 
       // 2. Simpan thumbnail foto ke Firestore
       try {

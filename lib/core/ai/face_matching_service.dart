@@ -2,7 +2,7 @@ import 'dart:math';
 
 // CATATAN: BATAS_TERIMA perlu dikalibrasi ulang.
 // Karena model yang digunakan adalah MobileFaceNet (berbeda dari dlib pada server),
-// skala jarak (distance scale) akan berbeda. 
+// skala jarak (distance scale) akan berbeda.
 // Disarankan untuk memulai dengan 1.0 dan melakukan pengujian.
 
 class FaceRecord {
@@ -10,10 +10,16 @@ class FaceRecord {
   final String name;
   final List<double> embedding;
 
+  // Embedding dari foto pendaftaran yang sama tetapi TANPA CLAHE.
+  // Dipakai saat eksperimen CLAHE dimatikan, agar galeri dan foto uji
+  // diproses dengan cara yang sama (null untuk data pendaftaran lama).
+  final List<double>? embeddingTanpaClahe;
+
   FaceRecord({
     required this.nim,
     required this.name,
     required this.embedding,
+    this.embeddingTanpaClahe,
   });
 }
 
@@ -23,22 +29,47 @@ class MatchResult {
   final double distance;
   final List<int> box; // [x1, y1, x2, y2]
 
+  // --- Data mentah untuk analisis FAR / FRR / MIR (penelitian) ---
+  // Kandidat terdekat SEBELUM disaring ambang/margin.
+  final String rawNim;
+  final String rawName;
+  // Jarak kandidat terdekat kedua (999.0 jika database hanya berisi 1 siswa).
+  final double secondDistance;
+  // 'diterima' | 'tolak_ambang' | 'tolak_margin' | 'tolak_duplikat'
+  final String alasan;
+  // Indeks wajah pada list embedding masukan.
+  final int faceIndex;
+
   MatchResult({
     required this.nim,
     required this.name,
     required this.distance,
     required this.box,
+    this.rawNim = 'Unknown',
+    this.rawName = 'Unknown',
+    this.secondDistance = 999.0,
+    this.alasan = 'diterima',
+    this.faceIndex = 0,
   });
 }
 
 class FaceMatchingService {
   // Ambang batas jarak maksimum untuk menerima kecocokan wajah.
   // 1.06 dioptimalkan agar peka mengenali wajah dari jarak jauh (2.5 s.d. 3.5 meter).
-  static const double batasTerima = 1.06; 
+  static const double batasTerima = 1.06;
 
   // Selisih minimal antara kecocokan terbaik (pertama) dan kedua.
   // Mencegah ambiguitas (wajah yang mirip dengan dua orang di database).
   static const double selisihMinimal = 0.06;
+
+  // Konfigurasi aktif (bisa diubah oleh Mode Penelitian).
+  // Nilai bawaan = perilaku normal aplikasi.
+  double ambang = batasTerima;
+  double margin = selisihMinimal;
+  // false = hanya ambang jarak tunggal (pembanding RM 2)
+  bool gunakanMargin = true;
+  // true = cocokkan terhadap embedding galeri tanpa CLAHE (pembanding RM 1)
+  bool gunakanGaleriTanpaClahe = false;
 
   List<FaceRecord> _database = [];
 
@@ -49,6 +80,10 @@ class FaceMatchingService {
 
   // Mendapatkan jumlah siswa yang terdaftar di database
   int get totalSiswa => _database.length;
+
+  // Jumlah siswa yang sudah punya embedding tanpa CLAHE (pendaftaran baru)
+  int get totalSiswaTanpaClahe =>
+      _database.where((r) => r.embeddingTanpaClahe != null).length;
 
   // Menghitung jarak Euclidean antara dua vektor embedding.
   // Jarak yang lebih rendah menunjukkan kemiripan yang lebih tinggi.
@@ -92,24 +127,29 @@ class FaceMatchingService {
   // Melakukan pencocokan wajah dari input (embeddings dan kotak wajah) dengan database.
   List<MatchResult> matchFaces(List<List<double>> embeddings, List<List<int>> boxes) {
     List<MatchResult> finalResults = [];
-    
+
     if (_database.isEmpty || embeddings.isEmpty) {
       return finalResults;
     }
 
     // List untuk menyimpan semua kandidat kecocokan potensial (sebelum difilter)
-    // Berisi Map dengan kunci: 'embeddingIndex', 'nim', 'name', 'distance', 'box'
+    // Berisi Map dengan kunci: 'embeddingIndex', 'nim', 'name', 'distance', 'box',
+    // ditambah data mentah 'rawNim', 'rawName', 'secondDistance', 'alasan'
     List<Map<String, dynamic>> candidates = [];
 
     // a. Untuk setiap embedding dari wajah yang terdeteksi, hitung jarak ke semua entri database
     for (int i = 0; i < embeddings.length; i++) {
       List<double> currentEmbedding = embeddings[i];
       List<int> currentBox = boxes[i];
-      
+
       List<Map<String, dynamic>> distances = [];
 
       for (var record in _database) {
-        double dist = euclideanDistance(currentEmbedding, record.embedding);
+        final galeri =
+            gunakanGaleriTanpaClahe ? record.embeddingTanpaClahe : record.embedding;
+        if (galeri == null) continue; // Pendaftaran lama tanpa embedding non-CLAHE
+
+        double dist = euclideanDistance(currentEmbedding, galeri);
         distances.add({
           'nim': record.nim,
           'name': record.name,
@@ -123,47 +163,32 @@ class FaceMatchingService {
       // b. Temukan kecocokan terbaik dan periksa apakah memenuhi BATAS_TERIMA
       if (distances.isNotEmpty) {
         double bestDist = distances[0]['distance'];
-        
-        if (bestDist <= batasTerima) {
-          bool valid = true;
+        double secondBestDist =
+            distances.length > 1 ? distances[1]['distance'] as double : 999.0;
 
-          // c. Cek SELISIH_MINIMAL jika ada lebih dari 1 kandidat di database
-          if (distances.length > 1) {
-            double secondBestDist = distances[1]['distance'];
-            if ((secondBestDist - bestDist) < selisihMinimal) {
-              // Terlalu ambigu (mirip dengan 2 orang sekaligus), sehingga ditolak
-              valid = false;
-            }
-          }
-
-          if (valid) {
-            candidates.add({
-              'embeddingIndex': i,
-              'nim': distances[0]['nim'],
-              'name': distances[0]['name'],
-              'distance': bestDist,
-              'box': currentBox,
-            });
-          } else {
-            // Ambiguitas
-            candidates.add({
-              'embeddingIndex': i,
-              'nim': 'Unknown',
-              'name': 'Unknown',
-              'distance': bestDist,
-              'box': currentBox,
-            });
-          }
-        } else {
+        String alasan = 'diterima';
+        if (bestDist > ambang) {
           // Tidak memenuhi BATAS_TERIMA (tidak cukup mirip)
-          candidates.add({
-            'embeddingIndex': i,
-            'nim': 'Unknown',
-            'name': 'Unknown',
-            'distance': bestDist,
-            'box': currentBox,
-          });
+          alasan = 'tolak_ambang';
+        } else if (gunakanMargin &&
+            distances.length > 1 &&
+            (secondBestDist - bestDist) < margin) {
+          // c. Terlalu ambigu (mirip dengan 2 orang sekaligus), sehingga ditolak
+          alasan = 'tolak_margin';
         }
+
+        final bool valid = alasan == 'diterima';
+        candidates.add({
+          'embeddingIndex': i,
+          'nim': valid ? distances[0]['nim'] : 'Unknown',
+          'name': valid ? distances[0]['name'] : 'Unknown',
+          'distance': bestDist,
+          'box': currentBox,
+          'rawNim': distances[0]['nim'],
+          'rawName': distances[0]['name'],
+          'secondDistance': secondBestDist,
+          'alasan': alasan,
+        });
       }
     }
 
@@ -184,36 +209,34 @@ class FaceMatchingService {
         continue;
       }
 
+      String hasilNim = nim;
+      String hasilNama = candidate['name'];
+      String alasan = candidate['alasan'];
+
+      // Jika NIM ini sudah dicocokkan dengan wajah lain sebelumnya (yang memiliki jarak lebih baik),
+      // maka wajah saat ini ditandai sebagai 'Unknown'
       if (nim != 'Unknown') {
-        // Jika NIM ini sudah dicocokkan dengan wajah lain sebelumnya (yang memiliki jarak lebih baik),
-        // maka wajah saat ini ditandai sebagai 'Unknown'
         if (matchedNims.contains(nim)) {
-          finalResults.add(MatchResult(
-            nim: 'Unknown',
-            name: 'Unknown',
-            distance: candidate['distance'],
-            box: candidate['box'],
-          ));
+          hasilNim = 'Unknown';
+          hasilNama = 'Unknown';
+          alasan = 'tolak_duplikat';
         } else {
-          // Cocok dan valid
           matchedNims.add(nim);
-          finalResults.add(MatchResult(
-            nim: nim,
-            name: candidate['name'],
-            distance: candidate['distance'],
-            box: candidate['box'],
-          ));
         }
-      } else {
-        // Memang dari awal sudah 'Unknown' (tidak lolos threshold atau ambigu)
-        finalResults.add(MatchResult(
-          nim: 'Unknown',
-          name: 'Unknown',
-          distance: candidate['distance'],
-          box: candidate['box'],
-        ));
       }
-      
+
+      finalResults.add(MatchResult(
+        nim: hasilNim,
+        name: hasilNama,
+        distance: candidate['distance'],
+        box: candidate['box'],
+        rawNim: candidate['rawNim'],
+        rawName: candidate['rawName'],
+        secondDistance: candidate['secondDistance'],
+        alasan: alasan,
+        faceIndex: idx,
+      ));
+
       processedEmbeddingIndices.add(idx);
     }
 
