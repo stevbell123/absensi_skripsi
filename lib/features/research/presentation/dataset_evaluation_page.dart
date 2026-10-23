@@ -19,7 +19,9 @@
 //   FAR = impostor yang diterima sebagai siswa mana pun / total impostor
 //   FRR = genuine yang ditolak (Unknown) / total genuine
 //   MIR = genuine yang diterima sebagai siswa LAIN / total genuine
-//   Foto tanpa wajah terdeteksi dihitung terpisah sebagai FTA (failure to acquire).
+//   Foto tanpa wajah terdeteksi (FTA) dihitung sebagai keputusan DITOLAK
+//   (genuine → FRR, impostor → ditolak dengan benar) sesuai Tabel 2.2 Bab II,
+//   dan jumlahnya tetap ditampilkan terpisah pada kolom FTA.
 // =========================================================================
 
 import 'dart:io';
@@ -538,11 +540,20 @@ class _Ringkasan {
   _Ringkasan(this.kondisi, this.clahe);
 
   void tambah(Map<String, dynamic> baris) {
+    final bool terdaftar = baris['terdaftar'] == 1;
     if (baris['alasan'] == 'wajah_tidak_terdeteksi') {
+      // Tanpa wajah = ditolak: genuine menjadi penolakan palsu, impostor ditolak dengan benar.
+      // Latensi tidak dicatat karena pipeline berhenti di tahap deteksi.
       fta++;
+      if (terdaftar) {
+        genuine++;
+        frT++;
+        frM++;
+      } else {
+        impostor++;
+      }
       return;
     }
-    final bool terdaftar = baris['terdaftar'] == 1;
     final String label = baris['label_nim'];
     final String predT = baris['pred_nim_tunggal'];
     final String predM = baris['pred_nim_margin'];

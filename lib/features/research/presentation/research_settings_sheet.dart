@@ -1,7 +1,9 @@
 // =========================================================================
 // PANEL PENGATURAN MODE PENELITIAN
 // =========================================================================
-// Dibuka dari ikon 🧪 di halaman Input Absensi dan layar Pindai Wajah.
+// Hanya dibuka dari Developer Control Panel (akun role 'developer' = tim peneliti),
+// sehingga guru dan admin sekolah mitra tidak dapat mengubahnya. Pengaturan
+// disimpan per perangkat (Hive), jadi tetap berlaku saat guru login di HP yang sama.
 // Berisi saklar eksperimen, label kondisi cahaya, serta akses ke evaluasi
 // dataset dan ekspor log.
 // =========================================================================

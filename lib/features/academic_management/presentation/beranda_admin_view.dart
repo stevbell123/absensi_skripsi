@@ -1,15 +1,14 @@
-import 'dart:convert'; 
 import 'dart:io';
-import 'package:flutter/services.dart'; 
+import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
 import 'package:file_picker/file_picker.dart'; // TAMBAHAN: Package untuk import file JSON
 
 // PENTING: Sesuaikan path import ini dengan lokasi file riwayat_backup_page.dart Anda
-import 'riwayat_backup_page.dart'; 
+import 'riwayat_backup_page.dart';
+import '../../research/presentation/research_settings_sheet.dart';
+import '../../../core/backup/backup_service.dart';
 
 class BerandaAdminView extends StatefulWidget {
   const BerandaAdminView({super.key});
@@ -84,37 +83,24 @@ class _BerandaAdminViewState extends State<BerandaAdminView> {
   }
 
   // =====================================================================
-  // 2. FITUR BACKUP REAL-TIME (KHUSUS DEVELOPER)
+  // 2. FITUR BACKUP KE FIRESTORE (KHUSUS DEVELOPER)
   // =====================================================================
-  Future<void> _exportRealDatabase() async {
+  // Backup disimpan di koleksi 'backups' (lihat BackupService) dan bisa dilihat
+  // di halaman Riwayat Backup maupun di Firebase Console.
+  Future<void> _backupKeFirestore() async {
     showDialog(context: context, barrierDismissible: false, builder: (c) => const Center(child: CircularProgressIndicator()));
 
     try {
-      Map<String, dynamic> backupData = {};
-      List<String> collections = ['users', 'classes', 'schedules', 'attendance', 'modules'];
-      
-      for (String col in collections) {
-        var snapshot = await FirebaseFirestore.instance.collection(col).get();
-        // Modifikasi kecil: Simpan ID dokumen agar saat Restore susunannya tidak berantakan
-        backupData[col] = snapshot.docs.map((doc) {
-          Map<String, dynamic> data = doc.data();
-          data['id'] = doc.id; // Menyisipkan ID ke dalam data
-          return data.map((key, value) => MapEntry(key, value.toString()));
-        }).toList();
+      final pembuat = FirebaseAuth.instance.currentUser?.email ?? 'developer';
+      final total = await BackupService().buatBackup(dibuatOleh: pembuat);
+
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('✅ Backup tersimpan di Firestore ($total dokumen). Lihat di Riwayat Backup.'),
+          backgroundColor: Colors.green,
+        ));
       }
-
-      String jsonBackup = jsonEncode(backupData);
-      
-      final directory = await getTemporaryDirectory();
-      final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-      final File file = File('${directory.path}/Backup_SIAP_$timestamp.json');
-      
-      await file.writeAsString(jsonBackup);
-
-      if (mounted) Navigator.pop(context); 
-
-      await Share.shareXFiles([XFile(file.path)], text: 'Backup Database SIAP Tgl: ${DateTime.now().toString()}');
-      
     } catch (e) {
       if (mounted) {
         Navigator.pop(context);
@@ -170,35 +156,14 @@ class _BerandaAdminViewState extends State<BerandaAdminView> {
 
         File file = File(result.files.single.path!);
         String jsonString = await file.readAsString();
-        Map<String, dynamic> backupData = jsonDecode(jsonString);
-        
-        FirebaseFirestore db = FirebaseFirestore.instance;
-        WriteBatch batch = db.batch(); // Menggunakan Batch agar proses restore instan
 
-        for (String collectionName in backupData.keys) {
-          List<dynamic> documents = backupData[collectionName];
-          
-          for (var doc in documents) {
-            Map<String, dynamic> docData = Map<String, dynamic>.from(doc);
-            String? docId = docData['id']; // Ambil ID asli
-            docData.remove('id'); // Hapus atribut ID agar tidak masuk sebagai kolom data
-            
-            DocumentReference docRef;
-            if (docId != null) {
-              docRef = db.collection(collectionName).doc(docId); // Kembalikan dengan ID asli
-            } else {
-              docRef = db.collection(collectionName).doc(); // Buat ID baru jika tidak ada
-            }
-            batch.set(docRef, docData);
-          }
-        }
-
-        await batch.commit(); // Eksekusi Injeksi Data
+        // Mendukung berkas backup format baru (tipe data utuh) maupun format lama
+        final jumlah = await BackupService().pulihkanDariJson(jsonString);
 
         if (mounted) {
           Navigator.pop(context); // Tutup loading
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('✅ Data berhasil dipulihkan (Restore Sukses)!'), backgroundColor: Colors.green),
+            SnackBar(content: Text('✅ Data berhasil dipulihkan ($jumlah dokumen)!'), backgroundColor: Colors.green),
           );
         }
       }
@@ -365,6 +330,22 @@ class _BerandaAdminViewState extends State<BerandaAdminView> {
                       const SizedBox(height: 12),
                       const Text('Status: SuperUser (God Mode)\nDatabase: Realtime Sync Active', style: TextStyle(color: Colors.white70, fontSize: 12, height: 1.5)),
                       const SizedBox(height: 16),
+                      // TOMBOL 0: MODE PENELITIAN (UNGU) - hanya akun developer (tim peneliti).
+                      // Pengaturan tersimpan per perangkat, jadi tetap berlaku saat guru login di HP yang sama.
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.deepPurple,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))
+                          ),
+                          icon: const Icon(Icons.science),
+                          label: const Text('MODE PENELITIAN (Skripsi)', style: TextStyle(fontWeight: FontWeight.bold)),
+                          onPressed: () => tampilkanPengaturanPenelitian(context),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
                       // TOMBOL 1: BACKUP DATABASE (KUNING)
                       SizedBox(
                         width: double.infinity,
@@ -374,9 +355,9 @@ class _BerandaAdminViewState extends State<BerandaAdminView> {
                             foregroundColor: Colors.black,
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))
                           ),
-                          icon: const Icon(Icons.download_rounded),
-                          label: const Text('Export Database Asli (JSON)', style: TextStyle(fontWeight: FontWeight.bold)),
-                          onPressed: _exportRealDatabase, 
+                          icon: const Icon(Icons.cloud_upload),
+                          label: const Text('BACKUP KE FIRESTORE', style: TextStyle(fontWeight: FontWeight.bold)),
+                          onPressed: _backupKeFirestore,
                         ),
                       ),
                       const SizedBox(height: 8),
@@ -390,7 +371,7 @@ class _BerandaAdminViewState extends State<BerandaAdminView> {
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))
                           ),
                           icon: const Icon(Icons.history),
-                          label: const Text('Lihat Riwayat Backup Server', style: TextStyle(fontWeight: FontWeight.bold)),
+                          label: const Text('Lihat Riwayat Backup', style: TextStyle(fontWeight: FontWeight.bold)),
                           onPressed: () {
                             Navigator.push(
                               context,

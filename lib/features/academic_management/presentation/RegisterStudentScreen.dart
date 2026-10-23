@@ -20,7 +20,6 @@ import 'package:camera/camera.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:image/image.dart' as img;
@@ -268,44 +267,6 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
   }
 
   // =========================================================================
-  // SINKRONISASI SERVER VPS DI LATAR BELAKANG (ASINKRON)
-  // =========================================================================
-  Future<void> _syncToServer(String imagePath, String nim, String name) async {
-    // 1. Coba kirim ke Port 8001 (Server Baru: YOLOv26 + ArcFace)
-    try {
-      final uri = Uri.parse('http://103.175.206.22:8001/api/register-student');
-      final request = http.MultipartRequest('POST', uri);
-      request.fields['nim'] = nim;
-      request.fields['nama'] = name;
-      request.fields['class_id'] = widget.classId;
-      request.files.add(await http.MultipartFile.fromPath('file', imagePath));
-      final res = await request.send().timeout(const Duration(seconds: 8));
-      if (res.statusCode == 200) {
-        debugPrint('[SERVER 8001] ✅ Sukses sinkronisasi siswa ke server 8001.');
-        return;
-      }
-    } catch (e) {
-      debugPrint('[SERVER 8001] Info server 8001: $e');
-    }
-
-    // 2. Fallback kirim ke Port 8000 (Server Lama: YOLO + dlib)
-    try {
-      final uri = Uri.parse('http://103.175.206.22:8000/register');
-      final request = http.MultipartRequest('POST', uri);
-      request.fields['nim'] = nim;
-      request.fields['name'] = name;
-      request.fields['variasi'] = '1';
-      request.files.add(await http.MultipartFile.fromPath('file', imagePath));
-      final res = await request.send().timeout(const Duration(seconds: 8));
-      if (res.statusCode == 200) {
-        debugPrint('[SERVER 8000] ✅ Sukses sinkronisasi siswa ke server 8000.');
-      }
-    } catch (e) {
-      debugPrint('[SERVER 8000] Info server 8000: $e');
-    }
-  }
-
-  // =========================================================================
   // PINDAI & DAFTARKAN WAJAH (SEKALI PINDAI / SCAN)
   // =========================================================================
   Future<void> _registerFace() async {
@@ -352,9 +313,6 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
       } catch (fe) {
         debugPrint('[FIRESTORE] Gagal simpan thumbnail foto siswa: $fe');
       }
-
-      // 5. Sinkronkan ke server VPS di background
-      _syncToServer(picture.path, nim, name);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -418,9 +376,6 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
       } catch (fe) {
         debugPrint('[FIRESTORE] Gagal simpan thumbnail dari galeri: $fe');
       }
-
-      // 3. Sinkronkan ke server VPS di background
-      _syncToServer(image.path, nim, name);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

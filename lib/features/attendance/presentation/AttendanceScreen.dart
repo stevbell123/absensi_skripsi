@@ -18,8 +18,6 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 import 'dart:io';
 import 'dart:async';
-import 'dart:convert';
-import 'package:http/http.dart' as http;
 
 import '../models/attendance_model.dart';
 import '../../../core/ai/face_detector_service.dart';
@@ -28,7 +26,6 @@ import '../../../core/ai/face_matching_service.dart';
 import '../../../core/ai/face_database_service.dart';
 import '../../research/research_config.dart';
 import '../../research/research_logger.dart';
-import '../../research/presentation/research_settings_sheet.dart';
 
 class AttendanceScreen extends StatefulWidget {
   final List<AttendanceRecord> records;
@@ -57,7 +54,6 @@ class _AttendanceScreenState extends State<AttendanceScreen>
   bool _isScanningCycle = false;
   bool _isFlashOn = false;
   bool _isAutoScan = true; // Auto-scan aktif secara default
-  bool _useServerEngine = false; // false = On-Device + CLAHE, true = Server VPS YOLOv26 + CLAHE
 
   Timer? _autoScanTimer;
   Timer? _bannerTimer;
@@ -78,7 +74,6 @@ class _AttendanceScreenState extends State<AttendanceScreen>
   // Daftar siswa yang terabsen pada sesi ini
   final List<String> _recognizedStudents = [];
   String? _latestRecognizedName;
-  String? _serverStatusMessage;
 
   int get _hadirCount =>
       widget.records.where((r) => r.status == AttendanceStatus.hadir).length;
@@ -169,12 +164,6 @@ class _AttendanceScreenState extends State<AttendanceScreen>
     return '✅ Siap Pindai ($total siswa dimuat)';
   }
 
-  Future<void> _bukaPengaturanPenelitian() async {
-    await tampilkanPengaturanPenelitian(context);
-    ResearchConfig.terapkanKe(_matchingService);
-    if (mounted && _isAiReady) setState(() => _statusText = _teksStatusSiap());
-  }
-
   /// Mencari siswa di daftar hadir untuk hasil pengenalan wajah.
   /// Logika pencocokan nama longgar dipertahankan; 'cocokVia' dicatat agar
   /// pengaruhnya terhadap MIR bisa dianalisis terpisah.
@@ -204,11 +193,8 @@ class _AttendanceScreenState extends State<AttendanceScreen>
     _autoScanTimer?.cancel();
     if (!_isAutoScan) return;
 
-    // Mode On-Device super gesit: scan setiap 600ms (kurang dari 1 detik langsung terabsen!)
-    // Mode Server: scan setiap 1400ms agar jaringan 4G tetap stabil & hemat bandwidth
-    final int intervalMs = _useServerEngine ? 1400 : 600;
-
-    _autoScanTimer = Timer.periodic(Duration(milliseconds: intervalMs), (timer) {
+    // Scan on-device setiap 600ms (kurang dari 1 detik langsung terabsen!)
+    _autoScanTimer = Timer.periodic(const Duration(milliseconds: 600), (timer) {
       if (!_isScanningCycle && _isAiReady && _isCameraInitialized && _isAutoScan && mounted) {
         _runAutoScanCycle();
       }
@@ -238,137 +224,7 @@ class _AttendanceScreenState extends State<AttendanceScreen>
   }
 
   // =========================================================================
-  // EKSEKUSI JALUR SERVER VPS (YOLOv26 + CLAHE + ARCFACE)
-  // =========================================================================
-  Future<void> _runServerScan(String filePath) async {
-    const String serverUrl = 'http://103.175.206.22:8001/api/scan-attendance';
-    try {
-      // 1. Kompresi & Resize Foto Kamera Sebelum Dikirim (Sangat Penting!)
-      // Dari ukuran kamera asli ~1.7 MB (lambat di 4G) menjadi ~75 KB (terkirim kilat < 0.2 detik!)
-      List<int> uploadBytes;
-      try {
-        final rawBytes = await File(filePath).readAsBytes();
-        final decoded = img.decodeImage(rawBytes);
-        if (decoded != null) {
-          // Resolusi optimal 1280px agar wajah siswa yang berjarak 2-3 meter
-          // atau berkelompok 5-6 orang tetap tajam & tidak pecah saat di-crop YOLO
-          final int maxDim = decoded.width > decoded.height ? decoded.width : decoded.height;
-          final resized = maxDim > 1280
-              ? (decoded.width >= decoded.height
-                  ? img.copyResize(decoded, width: 1280)
-                  : img.copyResize(decoded, height: 1280))
-              : decoded;
-          uploadBytes = img.encodeJpg(resized, quality: 82);
-        } else {
-          uploadBytes = rawBytes;
-        }
-      } catch (_) {
-        uploadBytes = await File(filePath).readAsBytes();
-      }
-
-      final request = http.MultipartRequest('POST', Uri.parse(serverUrl));
-      if (widget.classId.isNotEmpty) {
-        request.fields['class_id'] = widget.classId;
-      }
-      request.files.add(
-        http.MultipartFile.fromBytes('file', uploadBytes, filename: 'scan.jpg'),
-      );
-
-      // Timeout diperpanjang ke 10 detik agar aman di jaringan 4G/seluler
-      final streamedResponse =
-          await request.send().timeout(const Duration(seconds: 10));
-      final response = await http.Response.fromStream(streamedResponse);
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final List dynamicList = data['siswa_dikenali'] ?? [];
-        final int faceCount = data['wajah_terdeteksi'] ?? 0;
-        List<String> newlyRecognizedNames = [];
-
-        for (var item in dynamicList) {
-          final String nim = item['nim'] ?? '';
-          final String nama = item['nama'] ?? '';
-
-          final studentIndex = widget.records.indexWhere((r) {
-            final recName = r.studentName.toLowerCase().trim();
-            final srvName = nama.toLowerCase().trim();
-            final srvFirstName = srvName.split(' ').first;
-            final recFirstName = recName.split(' ').first;
-            return r.studentId == nim ||
-                recName == srvName ||
-                (srvName.isNotEmpty && recName.contains(srvName)) ||
-                (recName.isNotEmpty && srvName.contains(recName)) ||
-                (srvFirstName.length >= 3 && srvFirstName == recFirstName);
-          });
-
-          if (studentIndex != -1 &&
-              widget.records[studentIndex].status != AttendanceStatus.hadir) {
-            widget.records[studentIndex].status = AttendanceStatus.hadir;
-            final name = widget.records[studentIndex].studentName;
-            newlyRecognizedNames.add(name);
-
-            if (!_recognizedStudents.contains(name)) {
-              _recognizedStudents.insert(0, name);
-            }
-          }
-        }
-
-        if (newlyRecognizedNames.isNotEmpty) {
-          HapticFeedback.mediumImpact();
-          if (mounted) {
-            setState(() {
-              if (newlyRecognizedNames.length == 1) {
-                _latestRecognizedName =
-                    "${newlyRecognizedNames.first} (YOLOv26 + CLAHE Server)";
-              } else if (newlyRecognizedNames.length == 2) {
-                _latestRecognizedName =
-                    "${newlyRecognizedNames[0]} & ${newlyRecognizedNames[1]} (YOLO+CLAHE)";
-              } else {
-                _latestRecognizedName =
-                    "${newlyRecognizedNames.take(2).join(', ')} (YOLO+CLAHE)";
-              }
-              _serverStatusMessage = "✅ Hadir: ${newlyRecognizedNames.first}";
-            });
-            _bannerTimer?.cancel();
-            _bannerTimer = Timer(const Duration(milliseconds: 3000), () {
-              if (mounted) setState(() => _latestRecognizedName = null);
-            });
-          }
-        } else {
-          if (mounted) {
-            setState(() {
-              _serverStatusMessage = faceCount > 0
-                  ? "🌐 Server YOLO: $faceCount wajah terlihat, mencocokkan..."
-                  : "🌐 Server YOLO: Arahkan kamera ke wajah";
-            });
-          }
-        }
-      } else {
-        if (mounted) {
-          setState(() {
-            _serverStatusMessage = "⚠️ Server Error ${response.statusCode}";
-          });
-        }
-      }
-    } catch (e) {
-      debugPrint('[SERVER SCAN ERROR] $e');
-      if (mounted) {
-        setState(() {
-          final errStr = e.toString().toLowerCase();
-          if (errStr.contains('timeout')) {
-            _serverStatusMessage = "⏳ Jaringan 4G Lambat (Timeout)";
-          } else if (errStr.contains('refused') || errStr.contains('failed to connect')) {
-            _serverStatusMessage = "❌ Server 8001 Mati / Port Tertutup";
-          } else {
-            _serverStatusMessage = "❌ Gagal Menghubungi Server (Periksa Koneksi)";
-          }
-        });
-      }
-    }
-  }
-
-  // =========================================================================
-  // SIKLUS DETEKSI & PENCOCOKAN WAJAH OTOMATIS (DUAL-ENGINE)
+  // SIKLUS DETEKSI & PENCOCOKAN WAJAH OTOMATIS (ON-DEVICE)
   // =========================================================================
   Future<void> _runAutoScanCycle() async {
     if (_controller == null ||
@@ -381,143 +237,138 @@ class _AttendanceScreenState extends State<AttendanceScreen>
       // 1. Ambil frame foto secara cepat
       XFile picture = await _controller!.takePicture();
 
-      if (_useServerEngine) {
-        // MODE 2: Eksekusi Komputasi Berat di Server VPS (YOLOv26 + CLAHE + ArcFace)
-        await _runServerScan(picture.path);
-      } else {
-        // MODE 1: Eksekusi On-Device AI di HP (Google ML Kit + On-Device CLAHE + MobileFaceNet)
-        // Stopwatch mengukur latensi tiap tahap untuk analisis RM 1 (Mode Penelitian)
-        final bool gunakanClahe = ResearchConfig.efektifClahe;
-        final sw = Stopwatch()..start();
+      // Eksekusi On-Device AI di HP (Google ML Kit + On-Device CLAHE + MobileFaceNet)
+      // Stopwatch mengukur latensi tiap tahap untuk analisis RM 1 (Mode Penelitian)
+      final bool gunakanClahe = ResearchConfig.efektifClahe;
+      final sw = Stopwatch()..start();
 
-        final inputImage = InputImage.fromFilePath(picture.path);
-        final faces = await _detectorService.detectFaces(inputImage);
-        final double tDeteksi = sw.elapsedMicroseconds / 1000.0;
+      final inputImage = InputImage.fromFilePath(picture.path);
+      final faces = await _detectorService.detectFaces(inputImage);
+      final double tDeteksi = sw.elapsedMicroseconds / 1000.0;
 
-        if (faces.isNotEmpty) {
+      if (faces.isNotEmpty) {
+        sw..reset()..start();
+        final imageBytes = await File(picture.path).readAsBytes();
+        final rawImage = img.decodeImage(imageBytes);
+
+        if (rawImage != null) {
+          // Selaraskan orientasi rotasi kamera secara otomatis (aman untuk mode lanskap)
+          final fullImage = img.bakeOrientation(rawImage);
+          final double tDecode = sw.elapsedMicroseconds / 1000.0;
+
+          List<List<double>> allEmbeddings = [];
+          List<List<int>> allBoxes = [];
+          final List<Map<String, double>> waktuPerWajah = [];
+
+          for (final face in faces) {
+            final bbox = face.boundingBox;
+            sw..reset()..start();
+            final croppedFace = _embeddingService.cropAndAlignFace(fullImage, bbox);
+            final waktu = <String, double>{'crop_ms': sw.elapsedMicroseconds / 1000.0};
+            // Ekstraksi embedding dengan On-Device CLAHE (bisa dimatikan di Mode Penelitian)
+            final embedding = _embeddingService.extractEmbedding(
+              croppedFace,
+              applyClahe: gunakanClahe,
+              waktu: waktu,
+            );
+            waktuPerWajah.add(waktu);
+            allEmbeddings.add(embedding);
+            allBoxes.add([
+              bbox.left.toInt(),
+              bbox.top.toInt(),
+              bbox.right.toInt(),
+              bbox.bottom.toInt()
+            ]);
+          }
+
+          // Pencocokan vektor embedding terhadap database
           sw..reset()..start();
-          final imageBytes = await File(picture.path).readAsBytes();
-          final rawImage = img.decodeImage(imageBytes);
+          final results = _matchingService.matchFaces(allEmbeddings, allBoxes);
+          final double tMatching = sw.elapsedMicroseconds / 1000.0;
+          List<String> newlyRecognizedNames = [];
+          final List<Map<String, dynamic>> logWajah = [];
 
-          if (rawImage != null) {
-            // Selaraskan orientasi rotasi kamera secara otomatis (aman untuk mode lanskap)
-            final fullImage = img.bakeOrientation(rawImage);
-            final double tDecode = sw.elapsedMicroseconds / 1000.0;
+          final double tFrame = tDeteksi +
+              tDecode +
+              waktuPerWajah.fold<double>(
+                  0,
+                  (s, w) =>
+                      s + (w['crop_ms'] ?? 0.0) + (w['clahe_ms'] ?? 0.0) + (w['embedding_ms'] ?? 0.0)) +
+              tMatching;
 
-            List<List<double>> allEmbeddings = [];
-            List<List<int>> allBoxes = [];
-            final List<Map<String, double>> waktuPerWajah = [];
+          for (var result in results) {
+            final pencarian = result.nim != "Unknown"
+                ? _cariSiswa(result.nim, result.name)
+                : (index: -1, cocokVia: '');
 
-            for (final face in faces) {
-              final bbox = face.boundingBox;
-              sw..reset()..start();
-              final croppedFace = _embeddingService.cropAndAlignFace(fullImage, bbox);
-              final waktu = <String, double>{'crop_ms': sw.elapsedMicroseconds / 1000.0};
-              // Ekstraksi embedding dengan On-Device CLAHE (bisa dimatikan di Mode Penelitian)
-              final embedding = _embeddingService.extractEmbedding(
-                croppedFace,
-                applyClahe: gunakanClahe,
-                waktu: waktu,
-              );
-              waktuPerWajah.add(waktu);
-              allEmbeddings.add(embedding);
-              allBoxes.add([
-                bbox.left.toInt(),
-                bbox.top.toInt(),
-                bbox.right.toInt(),
-                bbox.bottom.toInt()
-              ]);
+            if (ResearchConfig.aktif) {
+              final w = waktuPerWajah[result.faceIndex];
+              logWajah.add({
+                'waktu': ResearchLogger.waktuSekarang(),
+                'sumber': 'live',
+                'sesi_id': widget.sesiId ?? '',
+                'kondisi_cahaya': ResearchConfig.kondisiCahaya,
+                'clahe': gunakanClahe ? 1 : 0,
+                'mode_verifikasi': ResearchConfig.labelVerifikasi,
+                'ambang': _matchingService.ambang,
+                'margin': _matchingService.margin,
+                'jumlah_wajah': faces.length,
+                'indeks_wajah': result.faceIndex,
+                ...ResearchLogger.kolomKeputusan(result,
+                    ambang: _matchingService.ambang, margin: _matchingService.margin),
+                'nim_daftar_hadir': pencarian.index != -1
+                    ? widget.records[pencarian.index].studentId
+                    : '',
+                'cocok_via': pencarian.cocokVia,
+                't_deteksi_ms': ResearchLogger.ms(tDeteksi),
+                't_decode_ms': ResearchLogger.ms(tDecode),
+                't_crop_ms': ResearchLogger.ms(w['crop_ms'] ?? 0.0),
+                't_clahe_ms': ResearchLogger.ms(w['clahe_ms'] ?? 0.0),
+                't_embedding_ms': ResearchLogger.ms(w['embedding_ms'] ?? 0.0),
+                't_matching_ms': ResearchLogger.ms(tMatching),
+                't_frame_ms': ResearchLogger.ms(tFrame),
+              });
             }
 
-            // Pencocokan vektor embedding terhadap database
-            sw..reset()..start();
-            final results = _matchingService.matchFaces(allEmbeddings, allBoxes);
-            final double tMatching = sw.elapsedMicroseconds / 1000.0;
-            List<String> newlyRecognizedNames = [];
-            final List<Map<String, dynamic>> logWajah = [];
+            if (result.nim != "Unknown") {
+              final studentIndex = pencarian.index;
 
-            final double tFrame = tDeteksi +
-                tDecode +
-                waktuPerWajah.fold<double>(
-                    0,
-                    (s, w) =>
-                        s + (w['crop_ms'] ?? 0.0) + (w['clahe_ms'] ?? 0.0) + (w['embedding_ms'] ?? 0.0)) +
-                tMatching;
+              if (studentIndex != -1 &&
+                  widget.records[studentIndex].status != AttendanceStatus.hadir) {
+                widget.records[studentIndex].status = AttendanceStatus.hadir;
+                final name = widget.records[studentIndex].studentName;
+                newlyRecognizedNames.add(name);
 
-            for (var result in results) {
-              final pencarian = result.nim != "Unknown"
-                  ? _cariSiswa(result.nim, result.name)
-                  : (index: -1, cocokVia: '');
-
-              if (ResearchConfig.aktif) {
-                final w = waktuPerWajah[result.faceIndex];
-                logWajah.add({
-                  'waktu': ResearchLogger.waktuSekarang(),
-                  'sumber': 'live',
-                  'sesi_id': widget.sesiId ?? '',
-                  'kondisi_cahaya': ResearchConfig.kondisiCahaya,
-                  'clahe': gunakanClahe ? 1 : 0,
-                  'mode_verifikasi': ResearchConfig.labelVerifikasi,
-                  'ambang': _matchingService.ambang,
-                  'margin': _matchingService.margin,
-                  'jumlah_wajah': faces.length,
-                  'indeks_wajah': result.faceIndex,
-                  ...ResearchLogger.kolomKeputusan(result,
-                      ambang: _matchingService.ambang, margin: _matchingService.margin),
-                  'nim_daftar_hadir': pencarian.index != -1
-                      ? widget.records[pencarian.index].studentId
-                      : '',
-                  'cocok_via': pencarian.cocokVia,
-                  't_deteksi_ms': ResearchLogger.ms(tDeteksi),
-                  't_decode_ms': ResearchLogger.ms(tDecode),
-                  't_crop_ms': ResearchLogger.ms(w['crop_ms'] ?? 0.0),
-                  't_clahe_ms': ResearchLogger.ms(w['clahe_ms'] ?? 0.0),
-                  't_embedding_ms': ResearchLogger.ms(w['embedding_ms'] ?? 0.0),
-                  't_matching_ms': ResearchLogger.ms(tMatching),
-                  't_frame_ms': ResearchLogger.ms(tFrame),
-                });
-              }
-
-              if (result.nim != "Unknown") {
-                final studentIndex = pencarian.index;
-
-                if (studentIndex != -1 &&
-                    widget.records[studentIndex].status != AttendanceStatus.hadir) {
-                  widget.records[studentIndex].status = AttendanceStatus.hadir;
-                  final name = widget.records[studentIndex].studentName;
-                  newlyRecognizedNames.add(name);
-
-                  if (!_recognizedStudents.contains(name)) {
-                    _recognizedStudents.insert(0, name);
-                  }
+                if (!_recognizedStudents.contains(name)) {
+                  _recognizedStudents.insert(0, name);
                 }
               }
             }
+          }
 
-            if (logWajah.isNotEmpty) {
-              unawaited(ResearchLogger.catatWajah(logWajah));
-            }
+          if (logWajah.isNotEmpty) {
+            unawaited(ResearchLogger.catatWajah(logWajah));
+          }
 
-            // Notifikasi visual & getaran jika ada siswa (1 atau lebih) yang berhasil diabsen
-            if (newlyRecognizedNames.isNotEmpty) {
-              HapticFeedback.mediumImpact();
-              if (mounted) {
-                setState(() {
-                  if (newlyRecognizedNames.length == 1) {
-                    _latestRecognizedName = gunakanClahe
-                        ? "${newlyRecognizedNames.first} (On-Device + CLAHE)"
-                        : "${newlyRecognizedNames.first} (On-Device)";
-                  } else if (newlyRecognizedNames.length == 2) {
-                    _latestRecognizedName = "${newlyRecognizedNames[0]} & ${newlyRecognizedNames[1]}";
-                  } else {
-                    _latestRecognizedName = "${newlyRecognizedNames.take(2).join(', ')} +${newlyRecognizedNames.length - 2} lainnya";
-                  }
-                });
-                _bannerTimer?.cancel();
-                _bannerTimer = Timer(const Duration(milliseconds: 3000), () {
-                  if (mounted) setState(() => _latestRecognizedName = null);
-                });
-              }
+          // Notifikasi visual & getaran jika ada siswa (1 atau lebih) yang berhasil diabsen
+          if (newlyRecognizedNames.isNotEmpty) {
+            HapticFeedback.mediumImpact();
+            if (mounted) {
+              setState(() {
+                if (newlyRecognizedNames.length == 1) {
+                  _latestRecognizedName = gunakanClahe
+                      ? "${newlyRecognizedNames.first} (On-Device + CLAHE)"
+                      : "${newlyRecognizedNames.first} (On-Device)";
+                } else if (newlyRecognizedNames.length == 2) {
+                  _latestRecognizedName = "${newlyRecognizedNames[0]} & ${newlyRecognizedNames[1]}";
+                } else {
+                  _latestRecognizedName = "${newlyRecognizedNames.take(2).join(', ')} +${newlyRecognizedNames.length - 2} lainnya";
+                }
+              });
+              _bannerTimer?.cancel();
+              _bannerTimer = Timer(const Duration(milliseconds: 3000), () {
+                if (mounted) setState(() => _latestRecognizedName = null);
+              });
             }
           }
         }
@@ -670,12 +521,6 @@ class _AttendanceScreenState extends State<AttendanceScreen>
         foregroundColor: Colors.white,
         actions: [
           IconButton(
-            icon: Icon(Icons.science,
-                color: ResearchConfig.aktif ? Colors.amberAccent : Colors.white),
-            tooltip: 'Mode Penelitian',
-            onPressed: _bukaPengaturanPenelitian,
-          ),
-          IconButton(
             icon: const Icon(Icons.flip_camera_ios),
             tooltip: 'Tukar Kamera',
             onPressed: _switchCamera,
@@ -766,20 +611,10 @@ class _AttendanceScreenState extends State<AttendanceScreen>
                         ),
                         child: Text(
                           _isAutoScan
-                              ? (_useServerEngine
-                                  ? (_serverStatusMessage ?? "Mode Server YOLOv26 + CLAHE Aktif")
-                                  : "Arahkan wajah siswa ke dalam kotak")
+                              ? "Arahkan wajah siswa ke dalam kotak"
                               : "Auto-scan dijeda. Tekan tombol Play di bawah.",
-                          style: TextStyle(
-                            color: _useServerEngine &&
-                                    _serverStatusMessage != null &&
-                                    _serverStatusMessage!.startsWith("❌")
-                                ? Colors.amberAccent
-                                : (_useServerEngine &&
-                                        _serverStatusMessage != null &&
-                                        _serverStatusMessage!.startsWith("✅")
-                                    ? Colors.greenAccent
-                                    : Colors.white70),
+                          style: const TextStyle(
+                            color: Colors.white70,
                             fontSize: 12,
                             fontWeight: FontWeight.w500,
                           ),
@@ -799,11 +634,7 @@ class _AttendanceScreenState extends State<AttendanceScreen>
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               decoration: BoxDecoration(
                 color: _isAutoScan
-                    ? (_useServerEngine &&
-                            _serverStatusMessage != null &&
-                            _serverStatusMessage!.startsWith("❌")
-                        ? Colors.red.shade900.withOpacity(0.92)
-                        : Colors.green.shade800.withOpacity(0.92))
+                    ? Colors.green.shade800.withOpacity(0.92)
                     : Colors.orange.shade900.withOpacity(0.92),
                 borderRadius: BorderRadius.circular(20),
                 boxShadow: [
@@ -824,9 +655,7 @@ class _AttendanceScreenState extends State<AttendanceScreen>
                   const SizedBox(width: 8),
                   Text(
                     _isAutoScan
-                        ? (_useServerEngine
-                            ? "🌐 Server YOLOv26: ${_serverStatusMessage ?? '103.175.206.22:8001'}"
-                            : "🟢 Auto-Scan Aktif ($_statusText)")
+                        ? "🟢 Auto-Scan Aktif ($_statusText)"
                         : "⏸ Auto-Scan Dijeda",
                     style: const TextStyle(
                       color: Colors.white,
@@ -886,80 +715,30 @@ class _AttendanceScreenState extends State<AttendanceScreen>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // 1. Saklar Mode Mesin Absensi (Dipindah ke bawah agar layar kamera luas & lega)
+              // 1. Label konfigurasi pengenalan wajah yang sedang aktif.
+              // Mode Penelitian hanya diatur dari Developer Control Panel; di sini guru hanya melihat penandanya.
               Container(
+                width: double.infinity,
                 margin: const EdgeInsets.only(bottom: 10),
-                padding: const EdgeInsets.all(3),
+                padding: const EdgeInsets.symmetric(vertical: 7),
                 decoration: BoxDecoration(
-                  color: Colors.white10,
+                  color: ResearchConfig.aktif ? Colors.amber.shade800 : Colors.green.shade600,
                   borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: Colors.white24, width: 1),
                 ),
                 child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Expanded(
-                      child: InkWell(
-                        onTap: () {
-                          setState(() => _useServerEngine = false);
-                          _startContinuousAutoScan();
-                        },
-                        borderRadius: BorderRadius.circular(20),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 7),
-                          decoration: BoxDecoration(
-                            color: !_useServerEngine ? Colors.green.shade600 : Colors.transparent,
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Icon(Icons.bolt, size: 15, color: Colors.white),
-                              const SizedBox(width: 5),
-                              Text(
-                                ResearchConfig.aktif
-                                    ? "⚡ ${ResearchConfig.labelKonfigurasi}"
-                                    : "⚡ On-Device + CLAHE",
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 11.5,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: InkWell(
-                        onTap: () {
-                          setState(() => _useServerEngine = true);
-                          _startContinuousAutoScan();
-                        },
-                        borderRadius: BorderRadius.circular(20),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 7),
-                          decoration: BoxDecoration(
-                            color: _useServerEngine ? Colors.blue.shade700 : Colors.transparent,
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: const [
-                              Icon(Icons.cloud_sync, size: 15, color: Colors.white),
-                              SizedBox(width: 5),
-                              Text(
-                                "🌐 Server YOLOv26",
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 11.5,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
+                    Icon(ResearchConfig.aktif ? Icons.science : Icons.bolt,
+                        size: 15, color: Colors.white),
+                    const SizedBox(width: 5),
+                    Text(
+                      ResearchConfig.aktif
+                          ? "Mode Penelitian · ${ResearchConfig.labelKonfigurasi}"
+                          : "⚡ On-Device + CLAHE",
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
                   ],

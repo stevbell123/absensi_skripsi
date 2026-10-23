@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:hive/hive.dart';
 import 'face_matching_service.dart';
 
@@ -8,18 +10,56 @@ import 'face_matching_service.dart';
 /// - Saat registrasi wajah: embedding langsung disimpan ke Firestore.
 /// - Sebelum scan absensi: sinkronisasi embedding untuk kelas tersebut (unduh dari Firestore → cache ke Hive).
 /// - Saat proses scan berjalan: gunakan cache di Hive (berfungsi secara offline).
-/// - Ukuran data: 180 mahasiswa × 128 float ≈ 180KB, sangat cepat untuk disinkronisasi.
+/// - Ukuran data: 180 mahasiswa × 192 float ≈ 270KB, sangat cepat untuk disinkronisasi.
+///
+/// Pelindungan data: box Hive dienkripsi AES-256 (HiveAesCipher). Kunci 256-bit dibuat
+/// acak sekali per perangkat dan disimpan di Android Keystore melalui flutter_secure_storage.
 class FaceDatabaseService {
   static const String _firestoreCollection = 'face_embeddings';
-  static const String _hiveBoxName = 'face_embeddings_cache';
+  static const String _hiveBoxName = 'face_embeddings_cache_aes';
+  // Box cache versi lama yang belum terenkripsi; dihapus saat box terenkripsi dibuka
+  static const String _hiveBoxLamaTanpaEnkripsi = 'face_embeddings_cache';
+  static const String _namaKunciEnkripsi = 'hive_face_embeddings_aes_key';
+
+  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
+  // Di-cache agar pemanggilan initHive yang bersamaan tidak membuat dua kunci berbeda
+  static Future<List<int>>? _kunciEnkripsi;
 
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  /// Membuka Hive box jika belum terbuka
+  /// Membuka Hive box terenkripsi jika belum terbuka
   Future<void> initHive() async {
-    if (!Hive.isBoxOpen(_hiveBoxName)) {
-      await Hive.openBox(_hiveBoxName);
+    if (Hive.isBoxOpen(_hiveBoxName)) return;
+
+    final cipher = HiveAesCipher(await (_kunciEnkripsi ??= _ambilKunciEnkripsi()));
+    try {
+      await Hive.openBox(_hiveBoxName, encryptionCipher: cipher);
+    } catch (e) {
+      // Box tidak bisa dibuka dengan kunci ini (mis. kunci dibuat ulang).
+      // Isinya hanya cache, jadi aman dihapus dan diunduh ulang dari Firestore.
+      print('[FaceDatabaseService] ⚠️ Cache terenkripsi tidak terbaca, dibuat ulang: $e');
+      await Hive.deleteBoxFromDisk(_hiveBoxName);
+      await Hive.openBox(_hiveBoxName, encryptionCipher: cipher);
     }
+
+    if (await Hive.boxExists(_hiveBoxLamaTanpaEnkripsi)) {
+      await Hive.deleteBoxFromDisk(_hiveBoxLamaTanpaEnkripsi);
+    }
+  }
+
+  /// Mengambil kunci AES-256 dari secure storage, atau membuatnya pada pemakaian pertama
+  static Future<List<int>> _ambilKunciEnkripsi() async {
+    try {
+      final tersimpan = await _secureStorage.read(key: _namaKunciEnkripsi);
+      if (tersimpan != null) return base64Url.decode(tersimpan);
+    } catch (e) {
+      // Kunci rusak / tidak bisa dibuka Keystore: buat kunci baru (cache lama ikut dibuat ulang)
+      print('[FaceDatabaseService] ⚠️ Gagal membaca kunci enkripsi, membuat kunci baru: $e');
+      await _secureStorage.delete(key: _namaKunciEnkripsi);
+    }
+    final kunci = Hive.generateSecureKey(); // 32 byte = 256 bit
+    await _secureStorage.write(key: _namaKunciEnkripsi, value: base64UrlEncode(kunci));
+    return kunci;
   }
 
   /// Mengubah data mentah (Firestore / Hive) menjadi FaceRecord.

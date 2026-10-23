@@ -12,7 +12,9 @@
 #   FAR = impostor (orang tak terdaftar) yang diterima / total impostor
 #   FRR = genuine (orang terdaftar) yang ditolak       / total genuine
 #   MIR = genuine yang dikenali sebagai orang LAIN     / total genuine
-#   FTA = foto tanpa wajah terdeteksi (dilaporkan terpisah, tidak masuk FAR/FRR/MIR)
+#   FTA = foto tanpa wajah terdeteksi. Dihitung sebagai keputusan DITOLAK
+#         (genuine → masuk FRR, impostor → ditolak dengan benar), sesuai Tabel 2.2,
+#         dan jumlahnya tetap dilaporkan terpisah pada kolom FTA.
 #
 # Penggunaan:
 #   pip install pandas numpy scipy matplotlib
@@ -106,9 +108,10 @@ def prediksi(df, ambang, margin=None):
 
 
 def metrik(df, pred):
+    # Foto tanpa wajah terdeteksi tetap dihitung: prediksi() memberinya UNKNOWN (ditolak)
     det = df["terdeteksi"]
-    gen = det & (df["terdaftar"] == 1)
-    imp = det & (df["terdaftar"] == 0)
+    gen = df["terdaftar"] == 1
+    imp = df["terdaftar"] == 0
     n_gen, n_imp = int(gen.sum()), int(imp.sum())
     fa = int((imp & (pred != UNKNOWN)).sum())
     fr = int((gen & (pred == UNKNOWN)).sum())

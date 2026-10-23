@@ -1,7 +1,14 @@
+// =========================================================================
+// RIWAYAT BACKUP (KHUSUS DEVELOPER)
+// =========================================================================
+// Menampilkan backup yang tersimpan di Cloud Firestore (koleksi 'backups').
+// Setiap backup bisa dibagikan sebagai berkas JSON, dipulihkan, atau dihapus.
+// Data yang sama juga terlihat di Firebase Console → Firestore → backups.
+// =========================================================================
+
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:intl/intl.dart';
+import '../../../core/backup/backup_service.dart';
 
 class RiwayatBackupPage extends StatefulWidget {
   const RiwayatBackupPage({Key? key}) : super(key: key);
@@ -11,43 +18,79 @@ class RiwayatBackupPage extends StatefulWidget {
 }
 
 class _RiwayatBackupPageState extends State<RiwayatBackupPage> {
-  List<dynamic> riwayatBackup = [];
-  bool isLoading = true;
+  final BackupService _backupService = BackupService();
 
-  // URL SUDAH DIGANTI KE SERVER HUGGING FACE ANDA
-final String serverUrl = "http://103.175.206.22:8000";
+  String _formatTanggal(DateTime? waktu) =>
+      waktu == null ? 'Menyimpan...' : DateFormat('d MMM yyyy, HH:mm', 'id_ID').format(waktu);
 
-  @override
-  void initState() {
-    super.initState();
-    fetchBackupList();
-  }
+  String _formatUkuran(int karakter) => karakter >= 1000000
+      ? '${(karakter / 1000000).toStringAsFixed(1)} MB'
+      : '${(karakter / 1000).toStringAsFixed(0)} KB';
 
-  Future<void> fetchBackupList() async {
+  /// Menjalankan proses dengan layar loading, lalu menampilkan hasil/galatnya
+  Future<void> _jalankan(Future<String> Function() proses) async {
+    showDialog(context: context, barrierDismissible: false, builder: (c) => const Center(child: CircularProgressIndicator()));
     try {
-      final response = await http.get(Uri.parse("$serverUrl/list-backup"));
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        setState(() {
-          riwayatBackup = data['data'];
-          isLoading = false;
-        });
-      } else {
-        setState(() => isLoading = false);
+      final pesan = await proses();
+      if (!mounted) return;
+      Navigator.pop(context);
+      if (pesan.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(pesan), backgroundColor: Colors.green));
       }
     } catch (e) {
-      setState(() => isLoading = false);
-      debugPrint("Gagal mengambil data: $e");
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('❌ Gagal: $e'), backgroundColor: Colors.red));
     }
   }
 
-  Future<void> downloadFile(String namaFile) async {
-    final url = Uri.parse("$serverUrl/download-backup/$namaFile");
-    if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Gagal mengunduh $namaFile')),
-      );
-    }
+  Future<bool> _konfirmasi(String judul, String isi, String tombol, Color warna) async {
+    final yakin = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text(judul),
+        content: Text(isi),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Batal')),
+          TextButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: Text(tombol, style: TextStyle(color: warna, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+    return yakin == true;
+  }
+
+  Future<void> _pulihkan(InfoBackup b) async {
+    final yakin = await _konfirmasi(
+      'Pulihkan backup?',
+      'Data dari backup ${_formatTanggal(b.dibuatPada)} akan ditulis ulang ke database.\n\n'
+          '• Dokumen dengan ID yang sama akan DITIMPA.\n'
+          '• Dokumen yang dibuat setelah backup ini tidak dihapus.\n'
+          '• Akun login (Firebase Authentication) tidak ikut dipulihkan.',
+      'Pulihkan',
+      Colors.orange.shade800,
+    );
+    if (!yakin) return;
+    await _jalankan(() async {
+      final n = await _backupService.pulihkanDariRiwayat(b.id);
+      return '✅ Restore selesai: $n dokumen dipulihkan.';
+    });
+  }
+
+  Future<void> _hapus(InfoBackup b) async {
+    final yakin = await _konfirmasi(
+      'Hapus backup?',
+      'Backup ${_formatTanggal(b.dibuatPada)} akan dihapus permanen dari Firestore.',
+      'Hapus',
+      Colors.red,
+    );
+    if (!yakin) return;
+    await _jalankan(() async {
+      await _backupService.hapusBackup(b.id);
+      return 'Backup dihapus.';
+    });
   }
 
   @override
@@ -55,52 +98,104 @@ final String serverUrl = "http://103.175.206.22:8000";
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        title: const Text("Riwayat Backup Server"),
+        title: const Text("Riwayat Backup"),
         backgroundColor: Colors.blue[800],
         foregroundColor: Colors.white,
       ),
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : riwayatBackup.isEmpty
-              ? const Center(
-                  child: Text(
-                    "Belum ada backup otomatis yang tersimpan.",
-                    style: TextStyle(fontSize: 16, color: Colors.grey),
-                  ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: riwayatBackup.length,
-                  itemBuilder: (context, index) {
-                    String namaFile = riwayatBackup[index];
-                    // Memotong string untuk mendapatkan tanggal saja (Asumsi format: backup_sistem_YYYY-MM-DD.json)
-                    String tanggal = namaFile.replaceAll("backup_sistem_", "").replaceAll(".json", "");
+      body: StreamBuilder<List<InfoBackup>>(
+        stream: _backupService.riwayat(),
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text('Gagal memuat riwayat: ${snapshot.error}', textAlign: TextAlign.center),
+              ),
+            );
+          }
+          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
 
-                    return Card(
-                      elevation: 2,
-                      margin: const EdgeInsets.only(bottom: 12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: ListTile(
-                        leading: const CircleAvatar(
-                          backgroundColor: Colors.green,
-                          child: Icon(Icons.verified_user, color: Colors.white),
-                        ),
-                        title: Text(
-                          "Backup: $tanggal",
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        subtitle: Text(namaFile),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.cloud_download, color: Colors.blue),
-                          onPressed: () => downloadFile(namaFile),
-                          tooltip: "Unduh JSON",
-                        ),
-                      ),
-                    );
-                  },
+          final daftar = snapshot.data!;
+          if (daftar.isEmpty) {
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'Belum ada backup.\nTekan "BACKUP KE FIRESTORE" di Developer Control Panel.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 16, color: Colors.grey),
                 ),
+              ),
+            );
+          }
+
+          return ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: daftar.length,
+            itemBuilder: (context, index) {
+              final b = daftar[index];
+              return Card(
+                elevation: 2,
+                margin: const EdgeInsets.only(bottom: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const CircleAvatar(
+                            backgroundColor: Colors.green,
+                            child: Icon(Icons.verified_user, color: Colors.white),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(_formatTanggal(b.dibuatPada),
+                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                Text('Oleh ${b.dibuatOleh}',
+                                    style: TextStyle(color: Colors.grey.shade700, fontSize: 12.5)),
+                                Text('${b.totalDokumen} dokumen · ${_formatUkuran(b.ukuranKarakter)}',
+                                    style: TextStyle(color: Colors.grey.shade700, fontSize: 12.5)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          TextButton.icon(
+                            icon: const Icon(Icons.share, size: 18),
+                            label: const Text('JSON'),
+                            onPressed: () => _jalankan(() async {
+                              await _backupService.bagikanSebagaiJson(b.id, tanggal: b.dibuatPada);
+                              return '';
+                            }),
+                          ),
+                          TextButton.icon(
+                            icon: Icon(Icons.restore, size: 18, color: Colors.orange.shade800),
+                            label: Text('Pulihkan', style: TextStyle(color: Colors.orange.shade800)),
+                            onPressed: () => _pulihkan(b),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete_outline, color: Colors.red),
+                            tooltip: 'Hapus backup',
+                            onPressed: () => _hapus(b),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
     );
   }
 }

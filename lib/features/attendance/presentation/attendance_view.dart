@@ -9,7 +9,6 @@ import '../models/attendance_model.dart';
 import 'AttendanceScreen.dart';
 import '../../research/research_config.dart';
 import '../../research/research_logger.dart';
-import '../../research/presentation/research_settings_sheet.dart';
 
 class AttendanceView extends ConsumerStatefulWidget {
   const AttendanceView({super.key});
@@ -234,17 +233,29 @@ class _AttendanceViewState extends ConsumerState<AttendanceView> {
                     style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87),
                   ),
                 ),
-                IconButton(
-                  icon: Icon(Icons.science,
-                      color: ResearchConfig.aktif ? Colors.orange : Colors.grey),
-                  tooltip: ResearchConfig.aktif
-                      ? 'Mode Penelitian aktif (sesi dicatat)'
-                      : 'Mode Penelitian',
-                  onPressed: () async {
-                    await tampilkanPengaturanPenelitian(context);
-                    if (mounted) setState(() {});
-                  },
-                ),
+                // Penanda saja: Mode Penelitian hanya diatur dari Developer Control Panel
+                if (ResearchConfig.aktif)
+                  Tooltip(
+                    message: 'Mode Penelitian aktif (sesi dicatat)',
+                    child: Container(
+                      margin: const EdgeInsets.only(right: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade50,
+                        border: Border.all(color: Colors.orange),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.science, color: Colors.orange, size: 16),
+                          SizedBox(width: 4),
+                          Text('Penelitian',
+                              style: TextStyle(color: Colors.orange, fontSize: 12, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                  ),
                 if (_records.isNotEmpty && _selectedScheduleData != null)
                   Container(
                     decoration: BoxDecoration(
