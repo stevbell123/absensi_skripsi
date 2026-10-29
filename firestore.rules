@@ -1,0 +1,146 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- Helper functions ----------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function currentUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function currentRole() {
+      return currentUserDoc().data.role;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && currentRole() == 'admin';
+    }
+
+    function isGuru() {
+      return isSignedIn() && currentRole() == 'guru';
+    }
+
+    function isSiswa() {
+      return isSignedIn() && currentRole() == 'siswa';
+    }
+
+    // =======================================================
+    // BONUS DEWA: Fungsi khusus untuk Developer
+    // =======================================================
+    function isDeveloper() {
+      return isSignedIn() && currentRole() == 'developer';
+    }
+
+    // =======================================================
+    // KUNCI MASTER: Developer berkuasa penuh atas SELURUH database
+    // =======================================================
+    match /{document=**} {
+      allow read, write: if isDeveloper();
+    }
+
+    // =======================================================
+    // BIOMETRIK WAJAH AI (BARU: Mencegah Error Permission-Denied)
+    // =======================================================
+    match /face_embeddings/{nim} {
+      // Hanya guru dan admin (developer lewat kunci master) yang bisa membaca embedding
+      allow read: if isAdmin() || isGuru();
+
+      // Admin dan Guru diizinkan mendaftarkan / memperbarui embedding wajah siswa
+      allow create, update: if isAdmin() || isGuru();
+      allow delete: if isAdmin();
+    }
+
+    // =======================================================
+    // ABSENSI HARIAN REAL-TIME (Sinkronisasi Server VPS & Rekap)
+    // =======================================================
+    match /absensi_harian/{tanggal} {
+      allow read, write: if isSignedIn();
+    }
+
+    // =======================================================
+    // TABEL BARU: laporan_bantuan (Pusat Bantuan Helpdesk)
+    // =======================================================
+    match /laporan_bantuan/{laporanId} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
+
+    // ---------- users ----------
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ---------- semesters, subjects ----------
+    match /semesters/{semesterId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /subjects/{subjectId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // ---------- classes ----------
+    match /classes/{classId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+
+      match /students/{studentId} {
+        allow read: if isSignedIn();
+        // DIPERBARUI: Guru juga diizinkan mengupdate data/foto wajah siswa
+        allow write: if isAdmin() || isGuru();
+      }
+    }
+
+    // ---------- Helper CollectionGroup (Grafik) ----------
+    match /{path=**}/students/{studentId} {
+      allow read: if isSignedIn();
+    }
+
+    // ---------- students (Global Fallback) ----------
+    match /students/{studentId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isGuru();
+    }
+
+    // ---------- schedules (Jadwal) ----------
+    match /schedules/{scheduleId} {
+      allow read: if isSignedIn();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || isGuru();
+    }
+
+    // ---------- attendance ----------
+    match /attendance/{attendanceId} {
+      allow read: if isAdmin() || isGuru();
+      allow create, update: if isAdmin() || isGuru();
+      allow delete: if isAdmin();
+    }
+
+    // ---------- grades (Nilai Lama) ----------
+    match /grades/{gradeId} {
+      allow read: if isAdmin() || isGuru() || (isSiswa() && resource.data.studentId == request.auth.uid);
+      allow create, update: if isAdmin() || isGuru();
+      allow delete: if isAdmin();
+    }
+
+    // ---------- activity_grades (Nilai Kegiatan Baru) ----------
+    match /activity_grades/{gradeId} {
+      allow read: if isAdmin() || isGuru() || (isSiswa() && resource.data.studentId == request.auth.uid);
+      allow create, update: if isAdmin() || isGuru();
+      allow delete: if isAdmin();
+    }
+
+    // ---------- modules (Bank Modul) ----------
+    match /modules/{moduleId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+  }
+}

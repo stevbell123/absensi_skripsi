@@ -14,16 +14,20 @@ extension AttendanceStatusX on AttendanceStatus {
 }
 
 class AttendanceRecord {
-  AttendanceRecord({required this.studentId, required this.studentName, required this.status});
+  AttendanceRecord({required this.studentId, required this.studentName, required this.status, this.waktu, this.jarak});
   final String studentId;
   final String studentName; 
   AttendanceStatus status;
+  DateTime? waktu; // waktu wajah diterima sistem (null jika diisi manual)
+  double? jarak;   // d1 saat diterima (null jika diisi manual)
 
   factory AttendanceRecord.fromMap(Map<String, dynamic> map) {
     return AttendanceRecord(
       studentId: map['studentId'] ?? '',
       studentName: map['studentName'] ?? '',
       status: AttendanceStatus.values.firstWhere((e) => e.name == map['status'], orElse: () => AttendanceStatus.alpa),
+      waktu: (map['waktu'] as Timestamp?)?.toDate(),
+      jarak: (map['jarak'] as num?)?.toDouble(),
     );
   }
 
@@ -31,6 +35,8 @@ class AttendanceRecord {
     'studentId': studentId,
     'studentName': studentName,
     'status': status.name,
+    if (waktu != null) 'waktu': Timestamp.fromDate(waktu!),
+    if (jarak != null) 'jarak': jarak,
   };
 }
 

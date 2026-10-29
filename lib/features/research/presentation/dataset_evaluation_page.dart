@@ -5,11 +5,12 @@
 // (ML Kit → crop → [CLAHE] → MobileFaceNet → pencocokan) pada folder foto
 // berlabel, sehingga setiap konfigurasi diuji pada foto yang identik.
 //
-// Struktur folder dataset:
-//   dataset_skripsi/
-//     galeri/<NIM>_<Nama>/*.jpg          → foto pendaftaran (dirata-ratakan per orang)
-//     uji/<kondisi>/<NIM>/*.jpg          → foto uji orang terdaftar (genuine)
-//     uji/<kondisi>/tidak_terdaftar/*.jpg → foto orang di luar galeri (impostor, untuk FAR)
+// Struktur folder dataset (dibaca oleh dataset_reader.dart):
+//   dataset_validasi/ atau dataset_uji/
+//     <NIS>_<Nama>/registrasi/*.jpg   → foto acuan siswa terdaftar
+//     <NIS>_<Nama>/<kondisi>/*.jpg    → foto siswa terdaftar (genuine)
+//     TT01_<Nama>/<kondisi>/*.jpg     → tanpa registrasi = tidak terdaftar (impostor, untuk FAR)
+//   Susunan lama (galeri/ + uji/<kondisi>/<NIS>/) tetap dibaca.
 //
 // Untuk setiap konfigurasi CLAHE (aktif / mati), galeri DIBANGUN ULANG dengan
 // pra-pemrosesan yang sama agar perbandingan adil. Keputusan ambang tunggal dan
@@ -34,11 +35,9 @@ import 'package:image/image.dart' as img;
 import '../../../core/ai/face_detector_service.dart';
 import '../../../core/ai/face_embedding_service.dart';
 import '../../../core/ai/face_matching_service.dart';
+import '../dataset_reader.dart';
 import '../research_config.dart';
 import '../research_logger.dart';
-
-const String _labelImpostor = 'tidak_terdaftar';
-const Set<String> _ekstensiFoto = {'.jpg', '.jpeg', '.png'};
 
 class DatasetEvaluationPage extends StatefulWidget {
   const DatasetEvaluationPage({super.key});
@@ -49,6 +48,9 @@ class DatasetEvaluationPage extends StatefulWidget {
 
 class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
   String? _folderDataset;
+  IsiDataset? _isi; // hasil pemeriksaan folder sebelum evaluasi
+  String? _galatFolder;
+  final List<String> _peringatanJalan = [];
   bool _ujiDenganClahe = true;
   bool _ujiTanpaClahe = true;
 
@@ -77,55 +79,80 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
 
   Future<void> _siapkanFolderBawaan() async {
     final dasar = await ResearchLogger.folderDasar();
-    if (mounted) setState(() => _folderDataset = '${dasar.path}/dataset_skripsi');
+    _aturFolder('${dasar.path}/dataset_validasi');
   }
 
+  void _aturFolder(String path) {
+    if (!mounted) return;
+    setState(() {
+      _folderDataset = path;
+      _hasil.clear();
+      _peringatanJalan.clear();
+      _status = '';
+    });
+    _periksaFolder();
+  }
+
+  /// Membaca isi folder tanpa memproses foto, agar kesalahan susunan terlihat sebelum evaluasi
+  void _periksaFolder() {
+    final folder = _folderDataset;
+    if (folder == null) return;
+    try {
+      final isi = bacaDataset(folder, kondisiDikenal: ResearchConfig.kondisiBawaan.keys.toSet());
+      setState(() {
+        _isi = isi;
+        _galatFolder = null;
+      });
+    } catch (e) {
+      setState(() {
+        _isi = null;
+        _galatFolder = e is FormatException ? e.message : '$e';
+      });
+    }
+  }
+
+  /// Daftar folder di dalam folder aplikasi (Android/data/<paket>/files), tempat dataset
+  /// disalin lewat USB. Pemilih folder Android sering tidak bisa membuka Android/data.
   Future<void> _pilihFolder() async {
-    final path = await FilePicker.platform.getDirectoryPath();
-    if (path != null && mounted) setState(() => _folderDataset = path);
-  }
-
-  /// Membuat kerangka folder kosong agar peneliti tinggal mengisi foto
-  Future<void> _buatStrukturFolder() async {
-    if (_folderDataset == null) return;
-    await Directory('$_folderDataset/galeri').create(recursive: true);
-    for (final kondisi in ResearchConfig.kondisiBawaan.keys) {
-      await Directory('$_folderDataset/uji/$kondisi/$_labelImpostor').create(recursive: true);
-    }
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Struktur folder dibuat. Isi galeri/<NIM>_<Nama>/ dan uji/<kondisi>/<NIM>/ dengan foto.'),
-      ));
-    }
-  }
-
-  // =========================================================================
-  // PEMBACAAN DATASET
-  // =========================================================================
-  static List<Directory> _subfolder(Directory dir) {
-    final list = dir.listSync().whereType<Directory>().toList()
-      ..sort((a, b) => a.path.compareTo(b.path));
-    return list;
-  }
-
-  static List<File> _fotoDi(Directory dir) {
-    final list = dir
-        .listSync()
-        .whereType<File>()
-        .where((f) => _ekstensiFoto.any((e) => f.path.toLowerCase().endsWith(e)))
-        .toList()
-      ..sort((a, b) => a.path.compareTo(b.path));
-    return list;
-  }
-
-  static String _namaFolder(Directory dir) =>
-      dir.path.split(Platform.pathSeparator).where((s) => s.isNotEmpty).last;
-
-  /// "12345_Budi Santoso" → nim "12345", nama "Budi Santoso"
-  static ({String nim, String nama}) _parseOrang(String namaFolder) {
-    final i = namaFolder.indexOf('_');
-    if (i <= 0) return (nim: namaFolder, nama: namaFolder);
-    return (nim: namaFolder.substring(0, i), nama: namaFolder.substring(i + 1));
+    final dasar = await ResearchLogger.folderDasar();
+    final daftar = subfolder(dasar).where((d) => namaFolder(d) != 'penelitian').toList();
+    if (!mounted) return;
+    final pilihan = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            ListTile(
+              title: const Text('Pilih folder dataset',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text(dasar.path, style: const TextStyle(fontSize: 11.5)),
+            ),
+            if (daftar.isEmpty)
+              const ListTile(
+                leading: Icon(Icons.info_outline),
+                title: Text('Belum ada folder. Salin dataset_validasi / dataset_uji '
+                    'ke folder di atas lewat kabel USB.'),
+              ),
+            ...daftar.map((d) => ListTile(
+                  leading: const Icon(Icons.folder, color: Colors.indigo),
+                  title: Text(namaFolder(d)),
+                  onTap: () => Navigator.pop(ctx, d.path),
+                )),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.sd_storage),
+              title: const Text('Folder lain di penyimpanan HP...'),
+              onTap: () async {
+                final path = await FilePicker.platform.getDirectoryPath();
+                if (ctx.mounted) Navigator.pop(ctx, path);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+    if (pilihan != null) _aturFolder(pilihan);
   }
 
   // =========================================================================
@@ -155,6 +182,9 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
     final crop = _embedding!.cropAndAlignFace(fullImage, bbox);
     waktu['crop'] = sw.elapsedMicroseconds / 1000.0;
 
+    // Luminansi untuk ambang T_Y (Bab III), dihitung di luar pengukuran latensi
+    final lum = _luminansi(fullImage, bbox);
+
     // 4. [CLAHE] + MobileFaceNet (waktu dicatat di dalam service)
     final w = <String, double>{};
     final emb = _embedding!.extractEmbedding(crop, applyClahe: clahe, waktu: w);
@@ -162,18 +192,39 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
     waktu['embedding'] = w['embedding_ms'] ?? 0.0;
 
     final box = [bbox.left.toInt(), bbox.top.toInt(), bbox.right.toInt(), bbox.bottom.toInt()];
-    return _HasilWajah(emb, box, faces.length, waktu);
+    return _HasilWajah(emb, box, faces.length, waktu,
+        lumWajah: lum.wajah, lumLatar: lum.latar);
+  }
+
+  /// Rata-rata luminansi Y (BT.601, sama dengan ClaheService) pada citra utuh
+  /// sebelum CLAHE: di dalam bounding box wajah (Ȳw) dan di luarnya (Ȳl).
+  static ({double? wajah, double? latar}) _luminansi(img.Image citra, Rect kotak) {
+    double jumlahWajah = 0, jumlahLatar = 0;
+    int nWajah = 0, nLatar = 0;
+    for (final p in citra) {
+      final y = 0.299 * p.r + 0.587 * p.g + 0.114 * p.b;
+      if (kotak.contains(Offset(p.x + 0.5, p.y + 0.5))) {
+        jumlahWajah += y;
+        nWajah++;
+      } else {
+        jumlahLatar += y;
+        nLatar++;
+      }
+    }
+    return (
+      wajah: nWajah > 0 ? jumlahWajah / nWajah : null,
+      latar: nLatar > 0 ? jumlahLatar / nLatar : null,
+    );
   }
 
   /// Membangun galeri: embedding semua foto satu orang dirata-ratakan lalu dinormalisasi L2
   Future<List<FaceRecord>> _bangunGaleri(
-      List<Directory> folderOrang, bool clahe, void Function() majukanProgres) async {
+      List<OrangGaleri> daftarOrang, bool clahe, void Function() majukanProgres) async {
     final galeri = <FaceRecord>[];
-    for (final dir in folderOrang) {
-      final orang = _parseOrang(_namaFolder(dir));
+    for (final orang in daftarOrang) {
       List<double>? jumlah;
       int n = 0;
-      for (final foto in _fotoDi(dir)) {
+      for (final foto in orang.foto) {
         if (_dibatalkan) return galeri;
         final h = await _prosesFoto(foto, clahe);
         majukanProgres();
@@ -199,13 +250,11 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
   // JALANKAN EVALUASI
   // =========================================================================
   Future<void> _jalankan() async {
-    final root = _folderDataset;
-    if (root == null) return;
-    final dirGaleri = Directory('$root/galeri');
-    final dirUji = Directory('$root/uji');
-
-    if (!dirGaleri.existsSync() || !dirUji.existsSync()) {
-      _tampilkanPesan('Folder galeri/ dan uji/ tidak ditemukan di $root');
+    if (_folderDataset == null) return;
+    _periksaFolder();
+    final isi = _isi;
+    if (isi == null) {
+      _tampilkanPesan(_galatFolder ?? 'Folder dataset belum dipilih.');
       return;
     }
 
@@ -219,6 +268,7 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
       _berjalan = true;
       _dibatalkan = false;
       _hasil.clear();
+      _peringatanJalan.clear();
       _progres = 0;
       _status = 'Memuat model AI...';
     });
@@ -231,25 +281,13 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
       }
       if (!_embedding!.isReady) throw Exception('Model MobileFaceNet gagal dimuat');
 
-      // Kumpulkan daftar foto
-      final folderOrangGaleri = _subfolder(dirGaleri);
-      final jumlahFotoGaleri =
-          folderOrangGaleri.fold<int>(0, (s, d) => s + _fotoDi(d).length);
-      final fotoUji = <_FotoUji>[];
-      for (final dirKondisi in _subfolder(dirUji)) {
-        final kondisi = _namaFolder(dirKondisi);
-        for (final dirOrang in _subfolder(dirKondisi)) {
-          final label = _parseOrang(_namaFolder(dirOrang)).nim;
-          for (final f in _fotoDi(dirOrang)) {
-            fotoUji.add(_FotoUji(kondisi, label, f, f.path.substring(root.length + 1)));
-          }
-        }
+      final fotoUji = isi.uji;
+      if (isi.galeri.isEmpty) {
+        throw Exception('Belum ada siswa terdaftar (folder registrasi berisi foto).');
       }
-      if (folderOrangGaleri.isEmpty || fotoUji.isEmpty) {
-        throw Exception('Galeri atau foto uji masih kosong.');
-      }
+      if (fotoUji.isEmpty) throw Exception('Belum ada foto di subfolder kondisi.');
 
-      final totalLangkah = konfigurasi.length * (jumlahFotoGaleri + fotoUji.length);
+      final totalLangkah = konfigurasi.length * (isi.jumlahFotoGaleri + fotoUji.length);
       int langkah = 0;
       void majukan() => langkah++;
       final sesiId = 'dataset_${DateTime.now().millisecondsSinceEpoch}';
@@ -259,16 +297,31 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
 
         // 1. Galeri dibangun ulang dengan pra-pemrosesan yang sama
         setState(() => _status = '[$labelKonfig] Membangun galeri...');
-        final galeri = await _bangunGaleri(folderOrangGaleri, clahe, () {
+        final galeri = await _bangunGaleri(isi.galeri, clahe, () {
           majukan();
           if (mounted) setState(() => _progres = langkah / totalLangkah);
         });
         if (_dibatalkan) break;
 
+        // Siswa yang wajahnya tidak terdeteksi di foto registrasi tidak masuk galeri,
+        // sehingga semua fotonya akan terhitung sebagai siswa tidak terdaftar.
+        final nimGaleri = galeri.map((g) => g.nim).toSet();
+        for (final orang in isi.galeri.where((o) => !nimGaleri.contains(o.nim))) {
+          final pesan = '${orang.nim}_${orang.nama}: wajah tidak terdeteksi di foto registrasi '
+              '(${clahe ? 'CLAHE' : 'tanpa CLAHE'}). Ganti foto registrasinya lalu ulangi evaluasi.';
+          if (mounted) setState(() => _peringatanJalan.add(pesan));
+        }
+
         final matcher = FaceMatchingService()
           ..loadDatabase(galeri)
           ..gunakanMargin = true;
         final nimTerdaftar = galeri.map((g) => g.nim).toSet();
+
+        // Pemanasan: 10 pemrosesan pertama tidak dicatat (Bab III Subbab 3.4.6)
+        setState(() => _status = '[$labelKonfig] Pemanasan...');
+        for (final foto in fotoUji.take(10)) {
+          await _prosesFoto(foto.file, clahe);
+        }
 
         // 2. Uji setiap foto
         final ringkasanPerKondisi = <String, _Ringkasan>{};
@@ -280,7 +333,8 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
           final h = await _prosesFoto(foto.file, clahe);
 
           final w = h?.waktu ?? {};
-          final terdaftar = foto.label != _labelImpostor && nimTerdaftar.contains(foto.label);
+          final terdaftar =
+              foto.label != labelTidakTerdaftar && nimTerdaftar.contains(foto.label);
           final baris = <String, dynamic>{
             'waktu': ResearchLogger.waktuSekarang(),
             'sumber': 'dataset',
@@ -300,6 +354,8 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
             't_crop_ms': ResearchLogger.ms(w['crop'] ?? 0.0),
             't_clahe_ms': ResearchLogger.ms(w['clahe'] ?? 0.0),
             't_embedding_ms': ResearchLogger.ms(w['embedding'] ?? 0.0),
+            'luminansi_wajah': h?.lumWajah == null ? '' : ResearchLogger.ms(h!.lumWajah!),
+            'luminansi_latar': h?.lumLatar == null ? '' : ResearchLogger.ms(h!.lumLatar!),
           };
 
           if (h?.embedding == null) {
@@ -351,7 +407,6 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
         if (_dibatalkan) break;
       }
 
-      await ResearchLogger.kirimKeFirestore();
       if (mounted) {
         setState(() => _status = _dibatalkan
             ? 'Dibatalkan. Hasil sebagian tersimpan di log.'
@@ -401,17 +456,18 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
                         label: const Text('Pilih Folder'),
                       ),
                       OutlinedButton.icon(
-                        onPressed: _berjalan ? null : _buatStrukturFolder,
-                        icon: const Icon(Icons.create_new_folder),
-                        label: const Text('Buat Struktur'),
+                        onPressed: _berjalan ? null : _periksaFolder,
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Periksa Ulang'),
                       ),
                     ],
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'galeri/<NIM>_<Nama>/*.jpg\n'
-                    'uji/<kondisi>/<NIM>/*.jpg\n'
-                    'uji/<kondisi>/$_labelImpostor/*.jpg',
+                    '<NIS>_<Nama>/registrasi/*.jpg   (siswa terdaftar)\n'
+                    '<NIS>_<Nama>/<kondisi>/*.jpg\n'
+                    'TT01_<Nama>/<kondisi>/*.jpg     (tanpa registrasi)\n'
+                    'kondisi: ${ResearchConfig.kondisiBawaan.keys.join(', ')}',
                     style: TextStyle(
                         fontFamily: 'monospace', fontSize: 11.5, color: Colors.grey.shade700),
                   ),
@@ -419,6 +475,7 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
               ),
             ),
           ),
+          _kartuIsiFolder(),
           CheckboxListTile(
             value: _ujiDenganClahe,
             onChanged: _berjalan ? null : (v) => setState(() => _ujiDenganClahe = v!),
@@ -447,6 +504,8 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
             const SizedBox(height: 6),
             Text(_status, style: const TextStyle(fontSize: 12)),
           ],
+          if (_peringatanJalan.isNotEmpty)
+            _kartuPeringatan('Perlu diperbaiki', _peringatanJalan, Colors.red),
           if (_hasil.isNotEmpty) ...[
             const SizedBox(height: 16),
             const Text('Ringkasan Hasil',
@@ -501,6 +560,75 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
     );
   }
 
+  /// Ringkasan isi folder: jumlah siswa, foto per kondisi, dan peringatan susunan
+  Widget _kartuIsiFolder() {
+    if (_galatFolder != null) {
+      return _kartuPeringatan('Folder belum bisa dipakai', [_galatFolder!], Colors.red);
+    }
+    final isi = _isi;
+    if (isi == null) return const SizedBox.shrink();
+    final siswaTidakTerdaftar = isi.format == 'per_siswa'
+        ? isi.uji
+            .where((f) => f.label == labelTidakTerdaftar)
+            .map((f) => f.relatif.split('/').first)
+            .toSet()
+            .length
+        : null;
+    return Column(
+      children: [
+        Card(
+          color: Colors.indigo.shade50,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Isi folder (${isi.format == 'per_siswa' ? 'per siswa' : 'susunan lama'})',
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                Text('Siswa terdaftar: ${isi.galeri.length} '
+                    '(${isi.jumlahFotoGaleri} foto registrasi)'),
+                if (siswaTidakTerdaftar != null)
+                  Text('Siswa tidak terdaftar: $siswaTidakTerdaftar'),
+                Text('Foto uji/validasi: ${isi.uji.length} '
+                    '(milik siswa tidak terdaftar: ${isi.jumlahTidakTerdaftar})'),
+                ...isi.fotoPerKondisi.entries.map((e) => Text('  • ${e.key}: ${e.value} foto')),
+              ],
+            ),
+          ),
+        ),
+        if (isi.peringatan.isNotEmpty)
+          _kartuPeringatan('Periksa susunan folder', isi.peringatan, Colors.orange),
+      ],
+    );
+  }
+
+  Widget _kartuPeringatan(String judul, List<String> pesan, MaterialColor warna) {
+    return Card(
+      color: warna.shade50,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Icon(Icons.warning_amber_rounded, color: warna.shade800, size: 20),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text('$judul (${pesan.length})',
+                    style: TextStyle(fontWeight: FontWeight.bold, color: warna.shade900)),
+              ),
+            ]),
+            const SizedBox(height: 4),
+            ...pesan.take(30).map((p) => Text('• $p', style: const TextStyle(fontSize: 12))),
+            if (pesan.length > 30)
+              Text('… dan ${pesan.length - 30} lainnya', style: const TextStyle(fontSize: 12)),
+          ],
+        ),
+      ),
+    );
+  }
+
   static String _pct(int a, int b) => b == 0 ? '-' : (a * 100 / b).toStringAsFixed(1);
 
   static String _rata(List<double> v) {
@@ -511,20 +639,15 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
   }
 }
 
-class _FotoUji {
-  final String kondisi;
-  final String label;
-  final File file;
-  final String relatif;
-  _FotoUji(this.kondisi, this.label, this.file, this.relatif);
-}
-
 class _HasilWajah {
   final List<double>? embedding;
   final List<int>? box;
   final int jumlahWajah;
   final Map<String, double> waktu;
-  _HasilWajah(this.embedding, this.box, this.jumlahWajah, this.waktu);
+  final double? lumWajah;
+  final double? lumLatar;
+  _HasilWajah(this.embedding, this.box, this.jumlahWajah, this.waktu,
+      {this.lumWajah, this.lumLatar});
 }
 
 /// Akumulator metrik FAR / FRR / MIR + latensi per (konfigurasi CLAHE, kondisi)

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'dart:convert'; // Untuk mendecode base64
 
 // Import Provider CSV-mu di sini
 import 'import_csv_provider.dart'; 
@@ -142,9 +141,6 @@ class _ClassDetailViewState extends ConsumerState<ClassDetailView> {
                         itemBuilder: (context, index) {
                           final doc = snapshot.data!.docs[index];
                           final data = doc.data() as Map<String, dynamic>;
-                          
-                          // Cek apakah siswa punya data foto Base64 (Fitur AI Anda)
-                          final hasPhoto = data['photoBase64'] != null && data['photoBase64'].toString().isNotEmpty;
 
                           return Card(
                             margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -152,17 +148,12 @@ class _ClassDetailViewState extends ConsumerState<ClassDetailView> {
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                             child: ListTile(
                               contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              leading: hasPhoto 
-                                ? CircleAvatar(
-                                    radius: 24,
-                                    backgroundColor: Colors.grey.shade200,
-                                    backgroundImage: MemoryImage(base64Decode(data['photoBase64'])),
-                                  )
-                                : CircleAvatar(
-                                    radius: 24,
-                                    backgroundColor: Colors.indigo.shade50,
-                                    child: Text(data['name'][0].toUpperCase(), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.indigo, fontSize: 20))
-                                  ),
+                              // Avatar inisial nama (foto wajah tidak disimpan)
+                              leading: CircleAvatar(
+                                radius: 24,
+                                backgroundColor: Colors.indigo.shade50,
+                                child: Text(data['name'][0].toUpperCase(), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.indigo, fontSize: 20))
+                              ),
                               title: Text(data['name'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                               subtitle: Text(data['email'] ?? data['nis'] ?? '-'),
                               trailing: Row(

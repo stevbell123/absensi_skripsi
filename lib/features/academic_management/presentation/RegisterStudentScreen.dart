@@ -4,9 +4,9 @@
 // SEBELUM: Foto dikirim ke server /register → server deteksi + simpan embedding
 // SESUDAH: Semua proses dilakukan 100% di smartphone:
 //   1. Google ML Kit → deteksi wajah (pastikan tepat 1 wajah)
-//   2. MobileFaceNet TFLite → embedding 128-d
+//   2. MobileFaceNet TFLite → embedding 192-d
 //   3. Simpan embedding ke Firestore koleksi 'face_embeddings'
-//   4. Foto thumbnail disimpan ke Firestore (base64, sama seperti sebelumnya)
+//   4. Foto wajah TIDAK disimpan; hanya embedding yang disimpan
 //
 // Perubahan utama:
 // - TIDAK ADA lagi HTTP request ke server
@@ -17,11 +17,9 @@
 
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:image_picker/image_picker.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:image/image.dart' as img;
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
@@ -177,31 +175,6 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
   }
 
   // =========================================================================
-  // SIMPAN THUMBNAIL KE FIRESTORE (sama seperti versi lama)
-  // =========================================================================
-  Future<void> _savePhotoToFirestore(String imagePath) async {
-    if (widget.classId.isEmpty || widget.studentDocId.isEmpty) return;
-    try {
-      final bytes = await XFile(imagePath).readAsBytes();
-      img.Image? originalImage = img.decodeImage(bytes);
-      if (originalImage != null) {
-        img.Image resizedImage = img.copyResize(originalImage, width: 150);
-        List<int> compressedBytes = img.encodeJpg(resizedImage, quality: 70);
-        String base64String = base64Encode(compressedBytes);
-
-        await FirebaseFirestore.instance
-            .collection('classes')
-            .doc(widget.classId)
-            .collection('students')
-            .doc(widget.studentDocId)
-            .update({'photoBase64': base64String});
-      }
-    } catch (e) {
-      debugPrint("Gagal update foto Base64 ke Firestore: $e");
-    }
-  }
-
-  // =========================================================================
   // DETEKSI + EMBEDDING SATU FOTO (BARU — ON-DEVICE)
   //
   // Menggantikan HTTP POST ke server /register.
@@ -307,13 +280,6 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
         embeddingTanpaClahe: embedding.tanpaClahe,
       );
 
-      // 4. Simpan thumbnail foto siswa ke Firestore (non-fatal jika permission tertutup)
-      try {
-        await _savePhotoToFirestore(picture.path);
-      } catch (fe) {
-        debugPrint('[FIRESTORE] Gagal simpan thumbnail foto siswa: $fe');
-      }
-
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -369,13 +335,6 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
         embedding.denganClahe,
         embeddingTanpaClahe: embedding.tanpaClahe,
       );
-
-      // 2. Simpan thumbnail foto ke Firestore
-      try {
-        await _savePhotoToFirestore(image.path);
-      } catch (fe) {
-        debugPrint('[FIRESTORE] Gagal simpan thumbnail dari galeri: $fe');
-      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

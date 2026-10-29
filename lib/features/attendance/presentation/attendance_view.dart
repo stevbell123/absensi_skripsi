@@ -52,7 +52,9 @@ class _AttendanceViewState extends ConsumerState<AttendanceView> {
     _statusSetelahScan = null;
   }
 
-  Future<void> _catatSesi() async {
+  /// [waktuSimpan] dan [durasiSinkron]: saat guru menekan Simpan dan lama sampai
+  /// Firestore mengonfirmasi penulisan (Bab III, waktu sinkronisasi).
+  Future<void> _catatSesi({DateTime? waktuSimpan, Duration? durasiSinkron}) async {
     if (!ResearchConfig.aktif || _sesiMulai == null) return;
 
     final selesai = DateTime.now();
@@ -98,6 +100,10 @@ class _AttendanceViewState extends ConsumerState<AttendanceView> {
       'kondisi_cahaya': ResearchConfig.kondisiCahaya,
       'clahe': pakaiWajah ? (ResearchConfig.efektifClahe ? 1 : 0) : '',
       'mode_verifikasi': pakaiWajah ? ResearchConfig.labelVerifikasi : '',
+      'waktu_simpan': waktuSimpan?.toIso8601String() ?? '',
+      'durasi_sinkron_detik': durasiSinkron != null
+          ? double.parse((durasiSinkron.inMilliseconds / 1000).toStringAsFixed(3))
+          : '',
     });
     _sesiMulai = null;
   }
@@ -195,14 +201,20 @@ class _AttendanceViewState extends ConsumerState<AttendanceView> {
     if (_isSubstituteMode) dataToSave['recordedBySubstitute'] = currentUserId;
 
     try {
+      // Saat offline, await baru selesai setelah koneksi kembali dan server mengonfirmasi
+      final waktuSimpan = DateTime.now();
+      final sw = Stopwatch()..start();
       await FirebaseFirestore.instance.collection('attendance').doc(docId).set(dataToSave, SetOptions(merge: true));
+      sw.stop();
       // Catat sesi SEBELUM status direset di bawah
-      await _catatSesi();
+      await _catatSesi(waktuSimpan: waktuSimpan, durasiSinkron: sw.elapsed);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tersimpan!'), backgroundColor: Colors.green));
         setState(() {
           for (var record in _records) {
             record.status = AttendanceStatus.alpa;
+            record.waktu = null;
+            record.jarak = null;
           }
         });
       }

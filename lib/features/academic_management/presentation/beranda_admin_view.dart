@@ -426,14 +426,17 @@ class _BerandaAdminViewState extends State<BerandaAdminView> {
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
                     if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                      // Bisa di-scroll agar tidak terpotong saat ruang tersisa sempit
                       return Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.event_busy, size: 64, color: Colors.grey.shade400),
-                            const SizedBox(height: 16),
-                            Text('Tidak ada jadwal kelas untuk hari $today', style: TextStyle(color: Colors.grey.shade600, fontSize: 16)),
-                          ],
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.event_busy, size: 64, color: Colors.grey.shade400),
+                              const SizedBox(height: 16),
+                              Text('Tidak ada jadwal kelas untuk hari $today', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey.shade600, fontSize: 16)),
+                            ],
+                          ),
                         ),
                       );
                     }

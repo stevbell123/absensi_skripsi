@@ -75,6 +75,12 @@ class _AttendanceScreenState extends State<AttendanceScreen>
   final List<String> _recognizedStudents = [];
   String? _latestRecognizedName;
 
+  // Penghitung pemindaian gagal berturut-turut (Bab III: 5 kali gagal = tidak dikenali).
+  // Siklus tanpa wajah terdeteksi juga dihitung gagal.
+  static const int _batasGagal = 5;
+  int _gagalBeruntun = 0;
+  String? _namaSiklusTerakhir; // nama yang diterima pada siklus terakhir
+
   int get _hadirCount =>
       widget.records.where((r) => r.status == AttendanceStatus.hadir).length;
 
@@ -232,6 +238,8 @@ class _AttendanceScreenState extends State<AttendanceScreen>
         _isScanningCycle) return;
 
     _isScanningCycle = true;
+    bool adaDiterima = false;
+    String? namaDiterima;
 
     try {
       // 1. Ambil frame foto secara cepat
@@ -260,7 +268,15 @@ class _AttendanceScreenState extends State<AttendanceScreen>
           List<List<int>> allBoxes = [];
           final List<Map<String, double>> waktuPerWajah = [];
 
-          for (final face in faces) {
+          // Mode Penelitian: hanya wajah terbesar yang diproses, sama dengan mode evaluasi
+          final wajahDiproses = List<Face>.from(faces);
+          if (ResearchConfig.aktif && wajahDiproses.length > 1) {
+            wajahDiproses.sort((a, b) => (b.boundingBox.width * b.boundingBox.height)
+                .compareTo(a.boundingBox.width * a.boundingBox.height));
+            wajahDiproses.removeRange(1, wajahDiproses.length);
+          }
+
+          for (final face in wajahDiproses) {
             final bbox = face.boundingBox;
             sw..reset()..start();
             final croppedFace = _embeddingService.cropAndAlignFace(fullImage, bbox);
@@ -285,6 +301,9 @@ class _AttendanceScreenState extends State<AttendanceScreen>
           sw..reset()..start();
           final results = _matchingService.matchFaces(allEmbeddings, allBoxes);
           final double tMatching = sw.elapsedMicroseconds / 1000.0;
+          final diterima = results.where((r) => r.nim != 'Unknown');
+          adaDiterima = diterima.isNotEmpty;
+          if (adaDiterima) namaDiterima = diterima.first.name;
           List<String> newlyRecognizedNames = [];
           final List<Map<String, dynamic>> logWajah = [];
 
@@ -336,6 +355,8 @@ class _AttendanceScreenState extends State<AttendanceScreen>
               if (studentIndex != -1 &&
                   widget.records[studentIndex].status != AttendanceStatus.hadir) {
                 widget.records[studentIndex].status = AttendanceStatus.hadir;
+                widget.records[studentIndex].waktu = DateTime.now();
+                widget.records[studentIndex].jarak = result.distance;
                 final name = widget.records[studentIndex].studentName;
                 newlyRecognizedNames.add(name);
 
@@ -374,6 +395,8 @@ class _AttendanceScreenState extends State<AttendanceScreen>
         }
       }
 
+      _perbaruiGagalBeruntun(adaDiterima, namaDiterima);
+
       // Bersihkan file sementara kamera agar hemat penyimpanan
       try {
         final f = File(picture.path);
@@ -386,6 +409,32 @@ class _AttendanceScreenState extends State<AttendanceScreen>
         setState(() => _isScanningCycle = false);
       }
     }
+  }
+
+  void _perbaruiGagalBeruntun(bool adaDiterima, String? nama) {
+    if (!mounted) return;
+    final sebelumnya = _gagalBeruntun;
+    setState(() {
+      _gagalBeruntun = adaDiterima ? 0 : (_gagalBeruntun + 1).clamp(0, _batasGagal);
+      _namaSiklusTerakhir = adaDiterima ? nama : null;
+    });
+    if (sebelumnya < _batasGagal && _gagalBeruntun == _batasGagal) {
+      HapticFeedback.vibrate();
+    }
+  }
+
+  /// Tombol "Siswa berikutnya": mulai hitungan gagal dari nol untuk siswa baru
+  void _siswaBerikutnya() {
+    setState(() {
+      _gagalBeruntun = 0;
+      _namaSiklusTerakhir = null;
+    });
+  }
+
+  String get _teksHasilPindai {
+    if (_namaSiklusTerakhir != null) return "1 siswa: $_namaSiklusTerakhir";
+    if (_gagalBeruntun >= _batasGagal) return "Tidak dikenali (gagal $_batasGagal/$_batasGagal)";
+    return "0 siswa (gagal $_gagalBeruntun/$_batasGagal)";
   }
 
   // =========================================================================
@@ -455,8 +504,6 @@ class _AttendanceScreenState extends State<AttendanceScreen>
 
   @override
   void dispose() {
-    // Kirim sisa antrean log penelitian ke Firestore (CSV lokal sudah tersimpan)
-    if (ResearchConfig.aktif) unawaited(ResearchLogger.kirimKeFirestore());
     _autoScanTimer?.cancel();
     _bannerTimer?.cancel();
     _laserController.dispose();
@@ -740,6 +787,35 @@ class _AttendanceScreenState extends State<AttendanceScreen>
                         fontSize: 11.5,
                         fontWeight: FontWeight.bold,
                       ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Hasil pemindaian terakhir + penghitung gagal berturut-turut
+              Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _teksHasilPindai,
+                        style: TextStyle(
+                          color: _namaSiklusTerakhir != null
+                              ? Colors.greenAccent
+                              : _gagalBeruntun >= _batasGagal
+                                  ? Colors.redAccent
+                                  : Colors.white70,
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    TextButton.icon(
+                      onPressed: _siswaBerikutnya,
+                      icon: const Icon(Icons.skip_next, size: 18),
+                      label: const Text("Siswa berikutnya"),
+                      style: TextButton.styleFrom(foregroundColor: Colors.amberAccent),
                     ),
                   ],
                 ),

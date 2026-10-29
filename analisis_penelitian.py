@@ -20,11 +20,23 @@
 #   pip install pandas numpy scipy matplotlib
 #   python analisis_penelitian.py --wajah penelitian_log_wajah.csv --sesi penelitian_log_sesi.csv
 #
+#   Penetapan parameter dari data validasi (Bab III Subbab 3.4.3):
+#   python analisis_penelitian.py --mode validasi --sesi-dataset <sesi_id dataset_validasi>
+#   → menulis lembar_penetapan_parameter.txt (T_Y, τ dan δ per kondisi CLAHE,
+#     metrik skenario A–D, konfigurasi terbaik)
+#
+#   Pengujian pada data uji dengan parameter dari lembar penetapan:
+#   python analisis_penelitian.py --mode uji --sesi-dataset <sesi_id dataset_uji>
+#
+#   Semua keluaran memakai kode siswa S01–S30, bukan NIM.
+#
 # Hasil (CSV + grafik PNG + ringkasan.txt) disimpan di folder hasil_analisis/
 # ==============================================================================
 
 import argparse
 import os
+import re
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -47,7 +59,7 @@ KOLOM_NIM = ["label_nim", "raw_nim", "pred_nim", "pred_nim_tunggal", "pred_nim_m
 KOLOM_ANGKA_WAJAH = [
     "clahe", "ambang", "margin", "terdaftar", "jumlah_wajah", "jarak_terbaik", "jarak_kedua",
     "selisih", "t_deteksi_ms", "t_decode_ms", "t_crop_ms", "t_clahe_ms", "t_embedding_ms",
-    "t_matching_ms", "t_frame_ms",
+    "t_matching_ms", "t_frame_ms", "luminansi_wajah", "luminansi_latar",
 ]
 
 _ringkasan = []
@@ -78,9 +90,14 @@ def muat_log_wajah(path):
     for k in KOLOM_NIM:
         df[k] = df[k].fillna("").str.strip()
     for k in KOLOM_ANGKA_WAJAH:
+        if k not in df:  # log lama belum punya kolom luminansi
+            df[k] = np.nan
         df[k] = pd.to_numeric(df[k], errors="coerce")
     df["kondisi_cahaya"] = df["kondisi_cahaya"].fillna("tidak_diketahui")
     df["terdeteksi"] = df["alasan"] != "wajah_tidak_terdeteksi"
+    # Aplikasi mengambil label dari nama folder sebelum "_", sehingga folder
+    # tidak_terdaftar/ terbaca "tidak". Samakan label semua citra tidak terdaftar.
+    df.loc[(df["sumber"] == "dataset") & (df["terdaftar"] == 0), "label_nim"] = "tidak_terdaftar"
     df["t_wajah_ms"] = df[["t_crop_ms", "t_clahe_ms", "t_embedding_ms"]].sum(axis=1)
     return df
 
@@ -388,6 +405,326 @@ def analisis_rm3(sesi, keluar):
 
 
 # ==============================================================================
+# KODE SISWA: NIM diganti S01–S30 pada semua keluaran
+# ==============================================================================
+BUKAN_NIM = {"", UNKNOWN, "tidak_terdaftar"}
+
+
+def samarkan_nim(df, keluar):
+    """Ganti NIM di kolom NIM dan jalur berkas dengan kode S01, S02, ... (urut NIM)."""
+    nim = sorted({v for k in KOLOM_NIM if k in df for v in df[k].unique()} - BUKAN_NIM)
+    kode = {n: f"S{i:02d}" for i, n in enumerate(nim, 1)}
+    for k in KOLOM_NIM:
+        if k in df:
+            df[k] = df[k].map(lambda v: kode.get(v, v))
+    if "file" in df and kode:
+        pola = re.compile(r"(?<![0-9A-Za-z])(" + "|".join(map(re.escape, nim)) + r")(?![0-9A-Za-z])")
+        df["file"] = df["file"].fillna("").map(lambda f: pola.sub(lambda m: kode[m.group(1)], f))
+    path = os.path.join(keluar, "padanan_kode_siswa_RAHASIA.csv")
+    pd.DataFrame({"kode": list(kode.values()), "nim": list(kode.keys())}).to_csv(path, index=False)
+    catat(f"ℹ️  NIM diganti kode siswa. Padanan kode disimpan di {path} "
+          "(simpan terpisah, jangan dilampirkan pada laporan).")
+    return df
+
+
+# ==============================================================================
+# PENETAPAN PARAMETER (DATA VALIDASI) DAN PENGUJIAN (DATA UJI)
+# ==============================================================================
+# Skenario: (kondisi CLAHE, verifikasi margin)
+SKENARIO = {"A": (0, False), "B": (1, False), "C": (0, True), "D": (1, True)}
+KONDISI_TIDAK_MEMADAI = ["low_light", "backlight"]
+BATAS_LATENSI_MS = 600
+BATAS_KENAIKAN_FRR = 4.0
+
+
+def uji_mcnemar(b, c):
+    """Persamaan (2.21) dengan koreksi kontinuitas; uji binomial eksak bila b + c < 25."""
+    if b + c == 0:
+        return np.nan, "-"
+    if b + c < 25:
+        p = stats.binomtest(min(b, c), b + c, 0.5).pvalue if stats is not None else np.nan
+        return p, "binomial eksak"
+    chi2 = (abs(b - c) - 1) ** 2 / (b + c)
+    p = stats.chi2.sf(chi2, 1) if stats is not None else np.nan
+    return p, f"χ² = {chi2:.3f}"
+
+
+def statistik_latensi(seri):
+    seri = seri.dropna()
+    if seri.empty:
+        return {"latensi_rata_ms": np.nan, "latensi": "-", "median_ms": np.nan, "P95_ms": np.nan}
+    return {"latensi_rata_ms": round(seri.mean(), 2), "latensi": mean_sd(seri),
+            "median_ms": round(seri.median(), 2), "P95_ms": round(seri.quantile(0.95), 2)}
+
+
+def hasil_skenario(ds, s, par):
+    clahe, pakai_margin = SKENARIO[s]
+    g = ds[ds["clahe"] == clahe]
+    delta = par[f"delta_clahe{clahe}"] if pakai_margin else None
+    return g, prediksi(g, par[f"tau_clahe{clahe}"], delta)
+
+
+def metrik_skenario(ds, par):
+    baris = []
+    for s in SKENARIO:
+        g, pred = hasil_skenario(ds, s, par)
+        if g.empty:
+            continue
+        m = metrik(g, pred)
+        baris.append({"skenario": s, "n_citra": len(g),
+                      "FAR_%": m["FAR_%"], "FRR_%": m["FRR_%"], "MIR_%": m["MIR_%"],
+                      "FRR+MIR_%": round(m["FRR_%"] + m["MIR_%"], 2), "FTA": m["FTA"],
+                      **statistik_latensi(g.loc[g["terdeteksi"], "t_frame_ms"])})
+    return pd.DataFrame(baris)
+
+
+def pilih_tau(g):
+    """τ = nilai terbesar (0,50–1,50, langkah 0,01) dengan FAR validasi 0% (ambang tunggal)."""
+    hasil = pd.DataFrame([{"tau": a, **metrik(g, prediksi(g, a))}
+                          for a in np.round(np.arange(0.50, 1.505, 0.01), 2)])
+    nol = hasil[hasil["FAR_%"] == 0]
+    if not nol.empty:
+        return float(nol["tau"].max()), hasil, True
+    terendah = hasil[hasil["FAR_%"] == hasil["FAR_%"].min()]
+    return float(terendah["tau"].max()), hasil, False
+
+
+def pilih_delta(g, tau):
+    """δ = nilai terbesar (0,00–0,20) yang kenaikan FRR validasinya ≤ 4 poin dibanding tanpa margin."""
+    frr_tanpa = metrik(g, prediksi(g, tau))["FRR_%"]
+    hasil = pd.DataFrame([{"delta": d, **metrik(g, prediksi(g, tau, d))}
+                          for d in np.round(np.arange(0.0, 0.205, 0.01), 2)])
+    hasil["kenaikan_FRR"] = (hasil["FRR_%"] - frr_tanpa).round(2)
+    return float(hasil.loc[hasil["kenaikan_FRR"] <= BATAS_KENAIKAN_FRR, "delta"].max()), hasil
+
+
+def pilih_konfigurasi(tabel):
+    """Tabel 3.18: syarat latensi rata-rata ≤ 600 ms, lalu FAR terendah, FRR + MIR terendah,
+    MIR terendah, dan konfigurasi paling sederhana (A, B, C, D)."""
+    t = tabel.copy()
+    t["urutan"] = t["skenario"].map({s: i for i, s in enumerate(SKENARIO)})
+    memenuhi = t[t["latensi_rata_ms"] <= BATAS_LATENSI_MS]
+    calon, catatan = (memenuhi, "memenuhi syarat latensi") if not memenuhi.empty else (
+        t, f"tidak ada yang memenuhi latensi ≤ {BATAS_LATENSI_MS} ms; dipilih FAR validasi terendah")
+    terbaik = calon.sort_values(["FAR_%", "FRR+MIR_%", "MIR_%", "urutan"]).iloc[0]
+    return terbaik["skenario"], catatan
+
+
+def hitung_ty(ds, ty=None):
+    """T_Y = (median Ȳw memadai + median Ȳw low-light) / 2, lalu verifikasi kategori tiap citra."""
+    if ds["luminansi_wajah"].isna().all():
+        return None, pd.DataFrame()
+    citra = ds.dropna(subset=["luminansi_wajah"]).drop_duplicates("file")
+    yw, yl = citra["luminansi_wajah"], citra["luminansi_latar"]
+    if ty is None:
+        ty = (yw[citra["kondisi_cahaya"] == "memadai"].median()
+              + yw[citra["kondisi_cahaya"] == "low_light"].median()) / 2
+    aturan = {"memadai": yw >= ty, "low_light": yw < ty, "backlight": (yw / yl) < 1}
+    baris = []
+    for kondisi, sesuai in aturan.items():
+        pilih = citra["kondisi_cahaya"] == kondisi
+        tidak = citra.loc[pilih & ~sesuai, "file"].tolist()
+        baris.append({"kondisi": kondisi, "n_citra": int(pilih.sum()),
+                      "sesuai": int((pilih & sesuai).sum()), "tidak_sesuai": len(tidak),
+                      "berkas_tidak_sesuai": "; ".join(tidak)})
+    return round(float(ty), 2), pd.DataFrame(baris)
+
+
+def satu_sesi(ds, nama_mode):
+    if ds.empty:
+        catat("❌ Tidak ada data evaluasi dataset untuk sesi yang dipilih.")
+        return False
+    if ds["sesi_id"].nunique() > 1:
+        catat(f"❌ Mode {nama_mode} membutuhkan satu sesi evaluasi. Pilih dengan --sesi-dataset, "
+              f"pilihan: {', '.join(sorted(ds['sesi_id'].unique()))}")
+        return False
+    return True
+
+
+def analisis_validasi(ds, keluar, path_lembar):
+    catat("\n" + "=" * 78)
+    catat("PENETAPAN PARAMETER DARI DATA VALIDASI (Bab III Subbab 3.4.3)")
+    catat("=" * 78)
+
+    par = {}
+    for clahe in [0, 1]:
+        g = ds[ds["clahe"] == clahe]
+        if g.empty:
+            catat(f"⚠️  Tidak ada data clahe = {clahe}; jalankan evaluasi dengan dan tanpa CLAHE.")
+            return
+        tau, sweep_tau, far_nol = pilih_tau(g)
+        delta, sweep_delta = pilih_delta(g, tau)
+        par[f"tau_clahe{clahe}"], par[f"delta_clahe{clahe}"] = tau, delta
+        simpan(sweep_tau, keluar, f"validasi_pencarian_tau_clahe{clahe}.csv")
+        simpan(sweep_delta, keluar, f"validasi_pencarian_delta_clahe{clahe}.csv")
+        catat(f"[clahe = {clahe}] τ = {tau:.2f}"
+              + ("" if far_nol else "  ⚠️ tidak ada τ dengan FAR 0%; dipakai FAR terendah")
+              + f", δ = {delta:.2f}")
+
+    ty, cek_ty = hitung_ty(ds)
+    tabel = metrik_skenario(ds, par)
+    terbaik, catatan = pilih_konfigurasi(tabel)
+
+    catat("\nMetrik skenario A–D pada data validasi:")
+    catat(tabel.drop(columns="latensi_rata_ms").to_string(index=False))
+    simpan(tabel, keluar, "validasi_metrik_skenario.csv")
+    catat(f"\nKonfigurasi terbaik: {terbaik} ({catatan})")
+    if ty is None:
+        catat("⚠️  Kolom luminansi belum ada di log; T_Y tidak dihitung.")
+    else:
+        catat(f"T_Y = {ty}")
+        catat(cek_ty.drop(columns="berkas_tidak_sesuai").to_string(index=False))
+        simpan(cek_ty, keluar, "validasi_verifikasi_luminansi.csv")
+
+    with open(path_lembar, "w", encoding="utf-8") as f:
+        f.write("LEMBAR PENETAPAN PARAMETER\n")
+        f.write(f"Tanggal  : {datetime.now():%Y-%m-%d %H:%M}\n")
+        f.write(f"Sesi     : {ds['sesi_id'].iloc[0]}\n\n")
+        f.write("[parameter]\n")
+        f.write(f"T_Y = {ty if ty is not None else '-'}\n")
+        for k, v in par.items():
+            f.write(f"{k} = {v:.2f}\n")
+        f.write(f"konfigurasi_terbaik = {terbaik}\n\n")
+        f.write(f"Alasan pemilihan: {catatan}\n\n")
+        f.write("[metrik data validasi]\n")
+        f.write(tabel.drop(columns="latensi_rata_ms").to_string(index=False) + "\n\n")
+        f.write("Ditetapkan sebelum citra uji diproses.\n\n")
+        f.write("Tanda tangan tim:\n\n1. ____________________\n2. ____________________\n"
+                "3. ____________________\n")
+    catat(f"  → lembar penetapan: {path_lembar}")
+
+
+def baca_lembar(path):
+    par = {}
+    with open(path, encoding="utf-8") as f:
+        for baris in f:
+            m = re.match(r"^(T_Y|tau_clahe[01]|delta_clahe[01]|konfigurasi_terbaik) = (\S+)$", baris.strip())
+            if m:
+                k, v = m.groups()
+                par[k] = v if k == "konfigurasi_terbaik" or v == "-" else float(v)
+    return par
+
+
+def per_citra(ds, s, par):
+    g, pred = hasil_skenario(ds, s, par)
+    gen = g["terdaftar"] == 1
+    return pd.DataFrame({
+        "kondisi": g["kondisi_cahaya"].values,
+        "terdaftar": gen.values,
+        "label": g["label_nim"].values,
+        "MIR": (gen & (pred != UNKNOWN) & (pred != g["label_nim"])).values,
+        "FRR": (gen & (pred == UNKNOWN)).values,
+        "FAR": (~gen & (pred != UNKNOWN)).values,
+        "terdeteksi": g["terdeteksi"].values,
+        "t_frame_ms": g["t_frame_ms"].values,
+    }, index=g["file"].values)
+
+
+def analisis_uji(ds, keluar, path_lembar):
+    catat("\n" + "=" * 78)
+    catat("PENGUJIAN PADA DATA UJI (parameter dari lembar penetapan)")
+    catat("=" * 78)
+    if not os.path.exists(path_lembar):
+        catat(f"❌ {path_lembar} tidak ditemukan. Jalankan --mode validasi terlebih dahulu.")
+        return
+    par = baca_lembar(path_lembar)
+    wajib = ["tau_clahe0", "delta_clahe0", "tau_clahe1", "delta_clahe1"]
+    if any(k not in par for k in wajib):
+        catat(f"❌ Lembar penetapan tidak lengkap: {', '.join(k for k in wajib if k not in par)}")
+        return
+    catat("Parameter: " + ", ".join(f"{k} = {par[k]}" for k in ["T_Y", *wajib, "konfigurasi_terbaik"]
+                                     if k in par))
+
+    # Metrik skenario: keseluruhan dan per kategori pencahayaan
+    kategori = {"SEMUA": ds, "memadai": ds[ds["kondisi_cahaya"] == "memadai"],
+                "tidak memadai": ds[ds["kondisi_cahaya"].isin(KONDISI_TIDAK_MEMADAI)]}
+    kategori.update({k: ds[ds["kondisi_cahaya"] == k] for k in KONDISI_TIDAK_MEMADAI})
+    tabel = pd.concat([metrik_skenario(d, par).assign(kategori=k)
+                       for k, d in kategori.items() if not d.empty], ignore_index=True)
+    tabel = tabel[["kategori"] + [c for c in tabel.columns if c != "kategori"]]
+    catat("\nMetrik skenario A–D:")
+    catat(tabel.drop(columns="latensi_rata_ms").to_string(index=False))
+    simpan(tabel, keluar, "uji_metrik_skenario.csv")
+
+    citra = {s: per_citra(ds, s, par) for s in SKENARIO}
+
+    # Uji McNemar (Bab III Tabel 3.22) terpisah untuk FAR, FRR, dan MIR,
+    # pasangan = citra yang sama pada dua skenario.
+    # b = kesalahan hanya terjadi pada skenario pertama, c = hanya pada skenario kedua.
+    def pasangan(s1, s2, kolom, pilih):
+        x, y = citra[s1], citra[s2]
+        idx = x.index.intersection(y.index)
+        x, y = x.loc[idx], y.loc[idx]
+        m = pilih(x)
+        x, y = x[m], y[m]
+        b, c = int((x[kolom] & ~y[kolom]).sum()), int((~x[kolom] & y[kolom]).sum())
+        p, metode = uji_mcnemar(b, c)
+        return {"n_pasangan": len(x), "b": b, "c": c, "metode": metode,
+                "p_value": round(p, 4) if not np.isnan(p) else np.nan,
+                "signifikan": "-" if np.isnan(p) else ("ya" if p < 0.05 else "tidak")}
+
+    def memadai(x):
+        return x["kondisi"] == "memadai"
+
+    def tidak_memadai(x):
+        return x["kondisi"].isin(KONDISI_TIDAK_MEMADAI)
+
+    def semua(x):
+        return pd.Series(True, index=x.index)
+
+    rancangan = [("H1a", "memadai", memadai, [("A", "B"), ("C", "D")]),
+                 ("H1b", "tidak memadai", tidak_memadai, [("A", "B"), ("C", "D")]),
+                 ("H2", "semua", semua, [("A", "C"), ("B", "D")])]
+    uji = []
+    for hipotesis, nama_kondisi, kondisi, daftar_pasangan in rancangan:
+        for s1, s2 in daftar_pasangan:
+            for kolom in ["FAR", "FRR", "MIR"]:
+                # FAR dihitung dari citra siswa tidak terdaftar, FRR dan MIR dari siswa terdaftar
+                ter = kolom != "FAR"
+                uji.append({"hipotesis": hipotesis, "kondisi": nama_kondisi,
+                            "data": "terdaftar" if ter else "tidak terdaftar", "metrik": kolom,
+                            "perbandingan": f"{s1} vs {s2}",
+                            **pasangan(s1, s2, kolom,
+                                       lambda x, k=kondisi, t=ter: k(x) & (x["terdaftar"] == t))})
+    uji = pd.DataFrame(uji)
+    catat("\nUji McNemar (b = kesalahan hanya pada skenario pertama, c = hanya pada skenario kedua):")
+    catat(uji.to_string(index=False))
+    simpan(uji, keluar, "uji_mcnemar.csv")
+
+    # Uji Wilcoxon signed-rank latensi (H1c), pasangan = citra yang sama tanpa vs dengan CLAHE
+    x, y = citra["A"], citra["B"]
+    idx = x.index.intersection(y.index)
+    x, y = x.loc[idx], y.loc[idx]
+    m = x["terdeteksi"] & y["terdeteksi"]
+    t_tanpa, t_clahe = x.loc[m, "t_frame_ms"], y.loc[m, "t_frame_ms"]
+    if len(t_tanpa) > 1 and stats is not None:
+        p = stats.wilcoxon(t_tanpa, t_clahe).pvalue
+        catat(f"\nH1c Wilcoxon latensi A vs B (sama dengan C vs D): n = {len(t_tanpa)}, "
+              f"median selisih (CLAHE − tanpa) = {(t_clahe - t_tanpa).median():.2f} ms, p = {p:.4g}")
+
+    # FRR dan MIR per siswa terdaftar
+    kolom_siswa = {}
+    for s in SKENARIO:
+        per_label = citra[s][citra[s]["terdaftar"]].groupby("label")
+        kolom_siswa[f"FRR_{s}_%"] = per_label["FRR"].mean().mul(100).round(2)
+        kolom_siswa[f"MIR_{s}_%"] = per_label["MIR"].mean().mul(100).round(2)
+    per_siswa = pd.DataFrame(kolom_siswa)
+    per_siswa.insert(0, "n_citra", citra["A"][citra["A"]["terdaftar"]].groupby("label").size())
+    per_siswa = per_siswa.rename_axis("kode_siswa").reset_index()
+    catat("\nFRR dan MIR per siswa (%):")
+    catat(per_siswa.to_string(index=False))
+    simpan(per_siswa, keluar, "uji_frr_mir_per_siswa.csv")
+
+    # Verifikasi kategori pencahayaan citra uji dengan T_Y dari data validasi
+    if isinstance(par.get("T_Y"), float):
+        _, cek_ty = hitung_ty(ds, par["T_Y"])
+        if not cek_ty.empty:
+            catat(f"\nVerifikasi luminansi citra uji (T_Y = {par['T_Y']}):")
+            catat(cek_ty.drop(columns="berkas_tidak_sesuai").to_string(index=False))
+            simpan(cek_ty, keluar, "uji_verifikasi_luminansi.csv")
+
+
+# ==============================================================================
 def main():
     parser = argparse.ArgumentParser(description="Analisis log penelitian presensi wajah")
     parser.add_argument("--wajah", default="penelitian_log_wajah.csv")
@@ -395,6 +732,10 @@ def main():
     parser.add_argument("--sesi-dataset", default=None,
                         help="Hanya pakai sesi_id dataset tertentu (default: semua)")
     parser.add_argument("--keluar", default="hasil_analisis")
+    parser.add_argument("--mode", choices=["semua", "validasi", "uji"], default="semua",
+                        help="validasi = tetapkan T_Y, τ, δ, konfigurasi terbaik; "
+                             "uji = pakai lembar penetapan pada data uji")
+    parser.add_argument("--lembar", default="lembar_penetapan_parameter.txt")
     args = parser.parse_args()
 
     os.makedirs(args.keluar, exist_ok=True)
@@ -404,8 +745,16 @@ def main():
         catat("⚠️  matplotlib tidak terpasang: grafik dilewati (pip install matplotlib)")
 
     if os.path.exists(args.wajah):
-        log = muat_log_wajah(args.wajah)
+        log = samarkan_nim(muat_log_wajah(args.wajah), args.keluar)
         ds = log[log["sumber"] == "dataset"]
+        if args.mode != "semua":
+            if args.sesi_dataset:
+                ds = ds[ds["sesi_id"] == args.sesi_dataset]
+            if satu_sesi(ds, args.mode):
+                (analisis_validasi if args.mode == "validasi" else analisis_uji)(ds, args.keluar, args.lembar)
+            with open(os.path.join(args.keluar, "ringkasan.txt"), "w", encoding="utf-8") as f:
+                f.write("\n".join(_ringkasan))
+            return
         if args.sesi_dataset:
             ds = ds[ds["sesi_id"] == args.sesi_dataset]
         elif ds["sesi_id"].nunique() > 1:
