@@ -3,6 +3,11 @@
     <!-- INI ADALAH IZIN INTERNET YANG WAJIB DITAMBAHKAN -->
     <uses-permission android:name="android.permission.INTERNET"/>
 
+    <!-- Membaca foto dataset penelitian di Pictures/Download/DCIM (Evaluasi Dataset) -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32"/>
+
     <application
         android:label="skripsi1"
         android:name="${applicationName}"

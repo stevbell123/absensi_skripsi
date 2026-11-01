@@ -5,9 +5,11 @@
 //
 // 1. Per siswa (utama):
 //      <folder dipilih>/
-//        <NIS>_<Nama>/registrasi/*.jpg   → foto acuan; ada folder ini = siswa TERDAFTAR
-//        <NIS>_<Nama>/<kondisi>/*.jpg    → foto uji/validasi (memadai, low_light, backlight)
-//        TT01_<Nama>/<kondisi>/*.jpg     → tanpa folder registrasi = siswa TIDAK TERDAFTAR
+//        S01/registrasi/*.jpg    → foto acuan; ada folder ini = siswa TERDAFTAR
+//        S01/<kondisi>/*.jpg     → foto uji/validasi (memadai, low_light, backlight)
+//        TT01/<kondisi>/*.jpg    → tanpa folder registrasi = siswa TIDAK TERDAFTAR
+//      Nama folder dipakai sebagai kode siswa (bagian sebelum "_" bila ada) dan ikut
+//      tercatat di log, jadi gunakan kode (S01, TT01), bukan NIS atau nama.
 //
 // 2. Lama (tetap dibaca):
 //      galeri/<NIS>_<Nama>/*.jpg
@@ -117,7 +119,7 @@ IsiDataset _bacaPerSiswa(
   final folderSiswa = subfolder(root);
   if (folderSiswa.isEmpty) {
     throw const FormatException('Folder ini tidak berisi folder siswa. Pilih folder dataset_validasi '
-        'atau dataset_uji yang berisi folder <NIS>_<Nama>.');
+        'atau dataset_uji yang berisi folder siswa (S01, S02, TT01, ...).');
   }
 
   for (final dirSiswa in folderSiswa) {

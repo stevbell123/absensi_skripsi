@@ -73,6 +73,24 @@ void main() {
     expect(isi.peringatan, isEmpty);
   });
 
+  test('folder berkode S01 dan TT01 (tanpa NIS dan nama) terbaca', () {
+    foto('S01/registrasi', 1);
+    foto('S01/memadai', 5);
+    foto('S02/registrasi', 1);
+    foto('S02/backlight', 3);
+    foto('TT01/memadai', 5);
+
+    final isi = bacaDataset(tmp.path, kondisiDikenal: kondisi);
+
+    expect(isi.galeri.map((o) => o.nim), ['S01', 'S02']);
+    expect(isi.uji.where((f) => f.label == 'S01').length, 5);
+    expect(isi.uji.where((f) => f.label == 'S02').length, 3);
+    expect(isi.jumlahTidakTerdaftar, 5);
+    // Path di log hanya memuat kode, tanpa nama siswa
+    expect(isi.uji.every((f) => RegExp(r'^(S\d\d|TT\d\d)/').hasMatch(f.relatif)), isTrue);
+    expect(isi.peringatan, isEmpty);
+  });
+
   test('nama berkas asli kamera dan ekstensi huruf besar tetap terbaca', () {
     Directory('${tmp.path}/2024001_Budi Santoso/registrasi').createSync(recursive: true);
     File('${tmp.path}/2024001_Budi Santoso/registrasi/20261117_073102.JPG').writeAsBytesSync([0]);

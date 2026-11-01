@@ -4,9 +4,15 @@
 # Membaca daftar siswa (CSV) lalu membuat folder kosong untuk dataset_uji dan/atau
 # dataset_validasi, satu folder per siswa, sesuai format yang dibaca halaman
 # Evaluasi Dataset (lib/features/research/dataset_reader.dart):
-#   <NIS>_<Nama>/registrasi/             → 1 foto registrasi (hanya siswa terdaftar)
-#   <NIS>_<Nama>/<kondisi>/              → foto memadai, low_light, backlight
-#   TT01_<Nama>/<kondisi>/               → siswa tidak terdaftar (tanpa folder registrasi)
+#   S01/registrasi/                      → 1 foto registrasi (hanya siswa terdaftar)
+#   S01/<kondisi>/                       → foto memadai, low_light, backlight
+#   TT01/<kondisi>/                      → siswa tidak terdaftar (tanpa folder registrasi)
+#
+# Folder memakai KODE siswa (S01–S25 menurut urutan absen, TT01–TT05), bukan NIS
+# atau nama, karena nama folder ikut tercatat di log penelitian. Padanan kode
+# dengan NIS dan nama ditulis ke padanan_kode_siswa_RAHASIA.csv di luar folder
+# dataset; simpan terpisah dan jangan dibagikan. Opsi --folder-nis memakai
+# nama folder <NIS>_<Nama> seperti versi sebelumnya.
 #
 # Jumlah foto per siswa:
 #   Uji (10 foto)      : 5 memadai; absen 1–15 → 3 low-light + 2 backlight,
@@ -52,18 +58,17 @@ def muat_daftar(path):
                           "nama": b["nama"].strip(), "status": status})
     siswa.sort(key=lambda s: s["absen"])
 
-    # Siswa tidak terdaftar diberi kode TT01, TT02, ... menurut urutan absen
-    nomor_tt = 0
+    # Kode menurut urutan absen: siswa terdaftar S01, S02, ...; tidak terdaftar TT01, TT02, ...
+    nomor_s = nomor_tt = 0
     for s in siswa:
         if s["status"] == LABEL_TT:
             nomor_tt += 1
             s["kode"] = f"TT{nomor_tt:02d}"
         else:
-            if not s["nis"]:
-                sys.exit(f"NIS kosong untuk siswa terdaftar absen {s['absen']}")
+            nomor_s += 1
+            s["kode"] = f"S{nomor_s:02d}"
             if "_" in s["nis"]:
                 sys.exit(f"NIS absen {s['absen']} tidak boleh memuat garis bawah (_)")
-            s["kode"] = s["nis"]
 
     terdaftar = sum(s["status"] == "terdaftar" for s in siswa)
     if len(siswa) != 30 or terdaftar != 25:
@@ -92,7 +97,26 @@ def tulis_pengingat(folder, n, keterangan):
         f.write(keterangan + "\n")
 
 
-def buat_bagian(siswa, akar, bagian, validasi_lengkap=False):
+def nama_folder_siswa(s, folder_nis):
+    if not folder_nis:
+        return s["kode"]
+    awal = s["nis"] if s["status"] == "terdaftar" else s["kode"]
+    if not awal:
+        sys.exit(f"--folder-nis: NIS kosong untuk siswa terdaftar absen {s['absen']}")
+    return f"{awal}_{nama_aman(s['nama'])}"
+
+
+def tulis_padanan(siswa, akar):
+    path = os.path.join(akar, "padanan_kode_siswa_RAHASIA.csv")
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["kode", "absen", "nis", "nama", "status"])
+        for s in siswa:
+            w.writerow([s["kode"], s["absen"], s["nis"], s["nama"], s["status"]])
+    print(f"🔒 Padanan kode siswa: {path} (simpan terpisah, jangan dibagikan)")
+
+
+def buat_bagian(siswa, akar, bagian, validasi_lengkap=False, folder_nis=False):
     kode_bagian = "U" if bagian == "uji" else "V"
     folder_dataset = os.path.join(akar, f"dataset_{bagian}")
     if os.path.exists(folder_dataset) and os.listdir(folder_dataset):
@@ -100,8 +124,7 @@ def buat_bagian(siswa, akar, bagian, validasi_lengkap=False):
 
     ceklis = []
     for s in siswa:
-        nama_folder = f"{s['kode']}_{nama_aman(s['nama'])}"
-        folder_siswa = os.path.join(folder_dataset, nama_folder)
+        folder_siswa = os.path.join(folder_dataset, nama_folder_siswa(s, folder_nis))
         os.makedirs(folder_siswa)
 
         # registrasi: hanya siswa terdaftar, 1 foto
@@ -144,6 +167,8 @@ def main():
     parser.add_argument("--daftar", required=True, help="CSV daftar siswa (absen,nis,nama,status)")
     parser.add_argument("--keluar", required=True, help="Folder tujuan, sebaiknya di luar folder proyek")
     parser.add_argument("--bagian", choices=["uji", "validasi", "semua"], default="uji")
+    parser.add_argument("--folder-nis", action="store_true",
+                        help="Nama folder <NIS>_<Nama> (nama siswa ikut tercatat di log)")
     parser.add_argument("--validasi-lengkap", action="store_true",
                         help="Validasi: setiap siswa difoto low-light dan backlight (90 citra)")
     args = parser.parse_args()
@@ -151,7 +176,8 @@ def main():
     siswa = muat_daftar(args.daftar)
     os.makedirs(args.keluar, exist_ok=True)
     for bagian in (["validasi", "uji"] if args.bagian == "semua" else [args.bagian]):
-        buat_bagian(siswa, args.keluar, bagian, args.validasi_lengkap)
+        buat_bagian(siswa, args.keluar, bagian, args.validasi_lengkap, args.folder_nis)
+    tulis_padanan(siswa, args.keluar)
 
 
 if __name__ == "__main__":

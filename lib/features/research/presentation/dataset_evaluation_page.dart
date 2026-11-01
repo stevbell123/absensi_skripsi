@@ -7,9 +7,9 @@
 //
 // Struktur folder dataset (dibaca oleh dataset_reader.dart):
 //   dataset_validasi/ atau dataset_uji/
-//     <NIS>_<Nama>/registrasi/*.jpg   → foto acuan siswa terdaftar
-//     <NIS>_<Nama>/<kondisi>/*.jpg    → foto siswa terdaftar (genuine)
-//     TT01_<Nama>/<kondisi>/*.jpg     → tanpa registrasi = tidak terdaftar (impostor, untuk FAR)
+//     S01/registrasi/*.jpg   → foto acuan siswa terdaftar (kode siswa, bukan NIS/nama)
+//     S01/<kondisi>/*.jpg    → foto siswa terdaftar (genuine)
+//     TT01/<kondisi>/*.jpg   → tanpa registrasi = tidak terdaftar (impostor, untuk FAR)
 //   Susunan lama (galeri/ + uji/<kondisi>/<NIS>/) tetap dibaca.
 //
 // Untuk setiap konfigurasi CLAHE (aktif / mati), galeri DIBANGUN ULANG dengan
@@ -31,6 +31,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
+import 'package:permission_handler/permission_handler.dart';
 
 import '../../../core/ai/face_detector_service.dart';
 import '../../../core/ai/face_embedding_service.dart';
@@ -143,7 +144,12 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
             ListTile(
               leading: const Icon(Icons.sd_storage),
               title: const Text('Folder lain di penyimpanan HP...'),
+              subtitle: const Text('Misalnya Pictures, Download, atau DCIM'),
               onTap: () async {
+                if (!await _mintaIzinFoto()) {
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  return;
+                }
                 final path = await FilePicker.platform.getDirectoryPath();
                 if (ctx.mounted) Navigator.pop(ctx, path);
               },
@@ -153,6 +159,21 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
       ),
     );
     if (pilihan != null) _aturFolder(pilihan);
+  }
+
+  /// Izin membaca foto di luar folder aplikasi: READ_MEDIA_IMAGES (Android 13+)
+  /// atau READ_EXTERNAL_STORAGE (Android 12 ke bawah, misalnya Galaxy S10).
+  Future<bool> _mintaIzinFoto() async {
+    if (!Platform.isAndroid) return true;
+    final status = await [Permission.photos, Permission.storage].request();
+    if (status.values.any((s) => s.isGranted || s.isLimited)) return true;
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text('Izin akses foto ditolak. Aktifkan di pengaturan aplikasi.'),
+        action: SnackBarAction(label: 'Pengaturan', onPressed: openAppSettings),
+      ));
+    }
+    return false;
   }
 
   // =========================================================================
@@ -464,9 +485,9 @@ class _DatasetEvaluationPageState extends State<DatasetEvaluationPage> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    '<NIS>_<Nama>/registrasi/*.jpg   (siswa terdaftar)\n'
-                    '<NIS>_<Nama>/<kondisi>/*.jpg\n'
-                    'TT01_<Nama>/<kondisi>/*.jpg     (tanpa registrasi)\n'
+                    'S01/registrasi/*.jpg   (siswa terdaftar)\n'
+                    'S01/<kondisi>/*.jpg\n'
+                    'TT01/<kondisi>/*.jpg   (tanpa registrasi = tidak terdaftar)\n'
                     'kondisi: ${ResearchConfig.kondisiBawaan.keys.join(', ')}',
                     style: TextStyle(
                         fontFamily: 'monospace', fontSize: 11.5, color: Colors.grey.shade700),
