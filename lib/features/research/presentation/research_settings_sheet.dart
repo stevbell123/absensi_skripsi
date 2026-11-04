@@ -11,6 +11,7 @@
 import 'package:flutter/material.dart';
 import '../research_config.dart';
 import '../research_logger.dart';
+import 'contoh_templat_page.dart';
 import 'dataset_evaluation_page.dart';
 
 Future<void> tampilkanPengaturanPenelitian(BuildContext context) async {
@@ -175,6 +176,19 @@ class _PanelPenelitianState extends State<_PanelPenelitian> {
                     Navigator.pop(context);
                     widget.navigator.push(MaterialPageRoute(
                         builder: (_) => const DatasetEvaluationPage()));
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.face_retouching_natural),
+                  label: const Text('Contoh Tahapan Templat (Gambar 3.10)'),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    widget.navigator.push(MaterialPageRoute(
+                        builder: (_) => const ContohTemplatPage()));
                   },
                 ),
               ),

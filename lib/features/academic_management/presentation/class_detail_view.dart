@@ -33,29 +33,48 @@ class _ClassDetailViewState extends ConsumerState<ClassDetailView> {
     );
     
     try {
-      final successCount = await ref.read(importCsvControllerProvider.notifier).importStudentsToClass(classId);
-      
-      if (context.mounted) {
-        Navigator.pop(context); // Tutup loading dialog
+      final result = await ref.read(importCsvControllerProvider.notifier).importStudentsToClass(classId);
 
-        if (successCount > 0) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('✅ Berhasil mengimpor $successCount siswa ke kelas $className!'), backgroundColor: Colors.green)
-          );
-        } else {
-          // Jika pengguna menekan tombol batal saat memilih file
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Proses dibatalkan atau data kosong.'), backgroundColor: Colors.orange)
-          );
-        }
-      }
-    } catch (e) {
-      if (context.mounted) {
-        Navigator.pop(context); // Tutup loading dialog
+      if (!mounted) return;
+      Navigator.pop(context); // Tutup loading dialog
+
+      if (result == null) {
+        // Pengguna menekan batal saat memilih berkas
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Gagal mengimpor data: $e'), backgroundColor: Colors.red)
+          const SnackBar(content: Text('Pemilihan berkas dibatalkan.'), backgroundColor: Colors.orange)
+        );
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✅ Berhasil mengimpor ${result.imported} siswa ke kelas $className!'
+              '${result.skipped.isEmpty ? '' : ' (${result.skipped.length} baris dilewati)'}'),
+          backgroundColor: Colors.green,
+        )
+      );
+
+      if (result.skipped.isNotEmpty) {
+        showDialog(
+          context: context,
+          builder: (c) => AlertDialog(
+            title: const Text('Baris yang dilewati'),
+            content: SingleChildScrollView(child: Text(result.skipped.join('\n'))),
+            actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))],
+          ),
         );
       }
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.pop(context); // Tutup loading dialog
+      final pesan = e is FormatException ? e.message : e.toString();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Gagal mengimpor data: $pesan'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 8),
+        )
+      );
     }
   }
 

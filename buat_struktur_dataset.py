@@ -2,14 +2,15 @@
 # PEMBUAT STRUKTUR FOLDER DATASET (BAB III TABEL 3.3)
 # ==============================================================================
 # Membaca daftar siswa (CSV) lalu membuat folder kosong untuk dataset_uji dan/atau
-# dataset_validasi, satu folder per siswa, sesuai format yang dibaca halaman
+# dataset_kalibrasi, satu folder per siswa, sesuai format yang dibaca halaman
 # Evaluasi Dataset (lib/features/research/dataset_reader.dart):
 #   S01/registrasi/                      → 1 foto registrasi (hanya siswa terdaftar)
 #   S01/<kondisi>/                       → foto memadai, low_light, backlight
-#   TT01/<kondisi>/                      → siswa tidak terdaftar (tanpa folder registrasi)
+#   S26/<kondisi>/                       → siswa tidak terdaftar (tanpa folder registrasi)
 #
-# Folder memakai KODE siswa (S01–S25 menurut urutan absen, TT01–TT05), bukan NIS
-# atau nama, karena nama folder ikut tercatat di log penelitian. Padanan kode
+# Folder memakai KODE siswa = S + nomor urut absen (S01–S30, Bab III Tabel 3.8), bukan
+# NIS atau nama, karena nama folder ikut tercatat di log penelitian. Status terdaftar
+# ditentukan oleh ada tidaknya folder registrasi. Padanan kode
 # dengan NIS dan nama ditulis ke padanan_kode_siswa_RAHASIA.csv di luar folder
 # dataset; simpan terpisah dan jangan dibagikan. Opsi --folder-nis memakai
 # nama folder <NIS>_<Nama> seperti versi sebelumnya.
@@ -17,8 +18,11 @@
 # Jumlah foto per siswa:
 #   Uji (10 foto)      : 5 memadai; absen 1–15 → 3 low-light + 2 backlight,
 #                        absen 16–30 → 2 low-light + 3 backlight
-#   Validasi (2 foto)  : 1 memadai; absen ganjil → 1 low-light, absen genap → 1 backlight
-#                        (--validasi-lengkap: setiap siswa 1 low-light DAN 1 backlight)
+#   Kalibrasi, siswa terdaftar (2 foto)      : 1 memadai; absen ganjil → 1 low-light,
+#                                              absen genap → 1 backlight
+#                                              (--kalibrasi-lengkap: 1 low-light DAN 1 backlight)
+#   Kalibrasi, siswa tidak terdaftar (4 foto): 2 memadai, 1 low-light, 1 backlight
+#   (Bab II Tabel 2.3, Bab III Tabel 3.10: 70 citra kalibrasi = 35 memadai, 18 low-light, 17 backlight)
 #
 # Setiap folder diberi berkas ISI_n_FOTO.txt sebagai pengingat jumlah foto.
 # Berkas .txt diabaikan oleh aplikasi, jadi tidak perlu dihapus.
@@ -31,7 +35,7 @@
 #
 # Penggunaan:
 #   python buat_struktur_dataset.py --daftar daftar_siswa.csv --keluar D:\Goals_16\dataset_skripsi --bagian uji
-#   (--bagian: uji, validasi, atau semua)
+#   (--bagian: kalibrasi, uji, atau semua; "validasi" = nama lama untuk kalibrasi)
 #   Nama berkas foto bebas (boleh nama asli kamera); kondisi dibaca dari nama subfolder.
 # ==============================================================================
 
@@ -58,17 +62,13 @@ def muat_daftar(path):
                           "nama": b["nama"].strip(), "status": status})
     siswa.sort(key=lambda s: s["absen"])
 
-    # Kode menurut urutan absen: siswa terdaftar S01, S02, ...; tidak terdaftar TT01, TT02, ...
-    nomor_s = nomor_tt = 0
+    # Kode = S + nomor urut absen (Bab III Tabel 3.8), untuk siswa terdaftar maupun tidak
     for s in siswa:
-        if s["status"] == LABEL_TT:
-            nomor_tt += 1
-            s["kode"] = f"TT{nomor_tt:02d}"
-        else:
-            nomor_s += 1
-            s["kode"] = f"S{nomor_s:02d}"
-            if "_" in s["nis"]:
-                sys.exit(f"NIS absen {s['absen']} tidak boleh memuat garis bawah (_)")
+        s["kode"] = f"S{s['absen']:02d}"
+        if s["status"] == "terdaftar" and "_" in s["nis"]:
+            sys.exit(f"NIS absen {s['absen']} tidak boleh memuat garis bawah (_)")
+    if len({s["kode"] for s in siswa}) != len(siswa):
+        sys.exit("Nomor absen ganda pada daftar siswa")
 
     terdaftar = sum(s["status"] == "terdaftar" for s in siswa)
     if len(siswa) != 30 or terdaftar != 25:
@@ -77,12 +77,14 @@ def muat_daftar(path):
     return siswa
 
 
-def jumlah_foto(s, bagian, validasi_lengkap=False):
+def jumlah_foto(s, bagian, kalibrasi_lengkap=False):
     """Jumlah foto per kondisi untuk satu siswa."""
     if bagian == "uji":
         awal = s["absen"] <= 15
         return {"memadai": 5, "low_light": 3 if awal else 2, "backlight": 2 if awal else 3}
-    if validasi_lengkap:
+    if s["status"] == LABEL_TT:  # kalibrasi siswa tidak terdaftar: 4 citra
+        return {"memadai": 2, "low_light": 1, "backlight": 1}
+    if kalibrasi_lengkap:
         return {"memadai": 1, "low_light": 1, "backlight": 1}
     ganjil = s["absen"] % 2 == 1
     return {"memadai": 1, "low_light": 1 if ganjil else 0, "backlight": 0 if ganjil else 1}
@@ -116,8 +118,8 @@ def tulis_padanan(siswa, akar):
     print(f"🔒 Padanan kode siswa: {path} (simpan terpisah, jangan dibagikan)")
 
 
-def buat_bagian(siswa, akar, bagian, validasi_lengkap=False, folder_nis=False):
-    kode_bagian = "U" if bagian == "uji" else "V"
+def buat_bagian(siswa, akar, bagian, kalibrasi_lengkap=False, folder_nis=False):
+    kode_bagian = "U" if bagian == "uji" else "K"
     folder_dataset = os.path.join(akar, f"dataset_{bagian}")
     if os.path.exists(folder_dataset) and os.listdir(folder_dataset):
         sys.exit(f"Folder {folder_dataset} sudah berisi data. Pindahkan atau hapus dulu agar tidak tertimpa.")
@@ -131,13 +133,13 @@ def buat_bagian(siswa, akar, bagian, validasi_lengkap=False, folder_nis=False):
         if s["status"] == "terdaftar":
             folder = os.path.join(folder_siswa, "registrasi")
             os.makedirs(folder)
-            sumber = ("salin foto yang sama dari dataset_validasi" if bagian == "uji"
+            sumber = ("salin foto yang sama dari dataset_kalibrasi" if bagian == "uji"
                       else "pencahayaan memadai, wajah lurus ke kamera")
             tulis_pengingat(folder, 1, f"Absen {s['absen']} - {s['nama']}: foto registrasi, {sumber}.")
             ceklis.append([s["absen"], s["kode"], s["nama"], "registrasi",
                            f"{s['kode']}_R_M_01.jpg", os.path.relpath(folder, folder_dataset)])
 
-        for kondisi, n in jumlah_foto(s, bagian, validasi_lengkap).items():
+        for kondisi, n in jumlah_foto(s, bagian, kalibrasi_lengkap).items():
             if n == 0:
                 continue
             folder = os.path.join(folder_siswa, kondisi)
@@ -166,17 +168,21 @@ def main():
     parser = argparse.ArgumentParser(description="Membuat struktur folder dataset penelitian")
     parser.add_argument("--daftar", required=True, help="CSV daftar siswa (absen,nis,nama,status)")
     parser.add_argument("--keluar", required=True, help="Folder tujuan, sebaiknya di luar folder proyek")
-    parser.add_argument("--bagian", choices=["uji", "validasi", "semua"], default="uji")
+    parser.add_argument("--bagian", choices=["kalibrasi", "uji", "semua", "validasi"], default="uji",
+                        help="kalibrasi, uji, atau semua (validasi = nama lama untuk kalibrasi)")
     parser.add_argument("--folder-nis", action="store_true",
                         help="Nama folder <NIS>_<Nama> (nama siswa ikut tercatat di log)")
-    parser.add_argument("--validasi-lengkap", action="store_true",
-                        help="Validasi: setiap siswa difoto low-light dan backlight (90 citra)")
+    parser.add_argument("--kalibrasi-lengkap", "--validasi-lengkap", dest="kalibrasi_lengkap",
+                        action="store_true",
+                        help="Kalibrasi: setiap siswa terdaftar difoto low-light dan backlight")
     args = parser.parse_args()
+    if args.bagian == "validasi":
+        args.bagian = "kalibrasi"
 
     siswa = muat_daftar(args.daftar)
     os.makedirs(args.keluar, exist_ok=True)
-    for bagian in (["validasi", "uji"] if args.bagian == "semua" else [args.bagian]):
-        buat_bagian(siswa, args.keluar, bagian, args.validasi_lengkap, args.folder_nis)
+    for bagian in (["kalibrasi", "uji"] if args.bagian == "semua" else [args.bagian]):
+        buat_bagian(siswa, args.keluar, bagian, args.kalibrasi_lengkap, args.folder_nis)
     tulis_padanan(siswa, args.keluar)
 
 

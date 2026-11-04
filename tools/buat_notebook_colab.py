@@ -32,8 +32,8 @@ dari HP. Tidak perlu memasang Python di laptop. Jalankan sel **dari atas ke bawa
 |---|---|---|
 | 0 | Siapkan program analisis | Program siap dipakai (tidak perlu diubah) |
 | 1 | Unggah log dari HP | `penelitian_log_wajah.csv` siap |
-| 2 | Lihat daftar sesi | ID sesi validasi dan uji |
-| 3 | Mode validasi | τ, δ, T_Y, konfigurasi terbaik, **lembar penetapan** (cetak dan tandatangani) |
+| 2 | Lihat daftar sesi | ID sesi kalibrasi dan uji |
+| 3 | Mode kalibrasi | τ (aturan tiga langkah), δ, T_Y, sebaran d1 dan d2−d1, konfigurasi terbaik, **lembar penetapan** (cetak dan tandatangani) |
 | 4 | Mode uji | FAR/FRR/MIR skenario A–D, McNemar, Wilcoxon, FRR/MIR per siswa (**hasil Bab IV**) |
 | 5 | RM 3 (opsional) | Presensi wajah vs manual dari log absensi guru |
 | 6 | Unduh hasil | `hasil_analisis.zip` |
@@ -55,6 +55,7 @@ import os, re
 
 print("Pilih: penelitian_log_wajah.csv (asli dari tombol Bagikan Log CSV)")
 print("Tambahan bila perlu: lembar_penetapan_parameter.txt (mode uji di sesi Colab baru),")
+print("                     mobilefacenet.tflite (sidik jari model untuk lembar penetapan),")
 print("                     penelitian_log_sesi.csv (RM 3)")
 diunggah = files.upload()
 
@@ -69,7 +70,7 @@ print("✅ penelitian_log_wajah.csv" if os.path.exists("penelitian_log_wajah.csv
 if not os.path.exists("analisis_penelitian.py"):
     print("❌ Jalankan sel Langkah 0 terlebih dahulu")
 """),
-    md("## Langkah 2 — Lihat daftar sesi evaluasi\nSesi paling awal biasanya **validasi**, sesi berikutnya **uji**. Salin ID-nya ke langkah 3 dan 4."),
+    md("## Langkah 2 — Lihat daftar sesi evaluasi\nSesi paling awal biasanya **kalibrasi**, sesi berikutnya **uji**. Salin ID-nya ke langkah 3 dan 4."),
     kode("""
 import pandas as pd
 
@@ -88,18 +89,33 @@ if bukan_kode:
 else:
     print("✅ Semua folder siswa memakai kode; log tidak memuat NIS atau nama.")
 """),
-    md("## Langkah 3 — Mode validasi\nIsi `SESI_VALIDASI` dengan ID dari langkah 2. Boleh dikosongkan bila log hanya berisi satu sesi."),
+    md("## Langkah 3 — Mode kalibrasi\nIsi `SESI_KALIBRASI` dengan ID dari langkah 2. Boleh dikosongkan bila log "
+       "hanya berisi satu sesi. τ ditetapkan dengan aturan tiga langkah Bab III Subbab 3.4.4: FAR 0% selama "
+       "FRR ≤ 10%; bila tidak, FRR ≤ 10% dengan FAR ≤ 5%; bila tetap tidak bisa, FAR + FRR terkecil. "
+       "Unggah juga `mobilefacenet.tflite` di langkah 1 agar sidik jari model tercatat di lembar."),
     kode("""
-SESI_VALIDASI = ""   # contoh: "dataset_1793555471085"
+SESI_KALIBRASI = ""   # contoh: "dataset_1793555471085"
+VERSI_APP = "0.1.0"   # versi aplikasi di HP uji (pubspec.yaml)
 
-opsi = f"--sesi-dataset {SESI_VALIDASI}" if SESI_VALIDASI else ""
-!python analisis_penelitian.py --mode validasi {opsi} --wajah penelitian_log_wajah.csv
+opsi = f"--sesi-dataset {SESI_KALIBRASI}" if SESI_KALIBRASI else ""
+if os.path.exists("mobilefacenet.tflite"):
+    opsi += " --model mobilefacenet.tflite"
+!python analisis_penelitian.py --mode kalibrasi {opsi} --versi-app {VERSI_APP} --wajah penelitian_log_wajah.csv
 """),
     kode("""
 # Lembar penetapan parameter: cetak dan tandatangani sebelum data uji diproses
 print(open("lembar_penetapan_parameter.txt", encoding="utf-8").read())
 """),
-    md("## Langkah 4 — Mode uji\nMemakai τ dan δ dari `lembar_penetapan_parameter.txt` (hasil langkah 3)."),
+    kode("""
+# Sebaran d1 dan d2−d1 pada data kalibrasi beserta posisi τ dan δ (Bab III Subbab 3.4.4)
+from IPython.display import Image
+display(pd.read_csv("hasil_analisis/kalibrasi_sebaran_jarak.csv"))
+for gambar in ["kalibrasi_sebaran_d1.png", "kalibrasi_sebaran_selisih.png"]:
+    path = os.path.join("hasil_analisis", gambar)
+    if os.path.exists(path):
+        display(Image(path))
+"""),
+    md("## Langkah 4 — Mode uji\nMemakai τ dan δ dari `lembar_penetapan_parameter.txt` (hasil langkah 3). Jalankan hanya setelah lembar ditandatangani."),
     kode("""
 SESI_UJI = ""   # contoh: "dataset_1793556650668"
 
@@ -108,7 +124,8 @@ opsi = f"--sesi-dataset {SESI_UJI}" if SESI_UJI else ""
 """),
     kode("""
 # Tabel hasil untuk Bab IV
-for nama in ["uji_metrik_skenario.csv", "uji_mcnemar.csv", "uji_frr_mir_per_siswa.csv"]:
+for nama in ["uji_metrik_skenario.csv", "uji_latensi_per_tahap.csv", "uji_mcnemar.csv",
+             "uji_frr_mir_per_siswa.csv"]:
     path = os.path.join("hasil_analisis", nama)
     if os.path.exists(path):
         print("\\n" + nama)
