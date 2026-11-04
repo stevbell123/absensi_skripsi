@@ -8,6 +8,16 @@ import 'academic_providers.dart';
 import '../../auth/data/models/user_model.dart';
 import '../../auth/domain/entities/user_entity.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'student_csv_parser.dart';
+
+/// Hasil impor siswa ke kelas.
+class ImportStudentsResult {
+  const ImportStudentsResult({required this.imported, required this.skipped});
+  final int imported;
+
+  /// Catatan baris yang dilewati, contoh "Baris 5: nama kosong".
+  final List<String> skipped;
+}
 
 class ImportCsvController extends StateNotifier<AsyncValue<void>> {
   ImportCsvController(this._dataSource) : super(const AsyncData(null));
@@ -77,63 +87,65 @@ class ImportCsvController extends StateNotifier<AsyncValue<void>> {
   // ===================================================================
   // 2. FUNGSI BARU (Khusus dari dalam Detail Kelas)
   // ===================================================================
-  Future<int> importStudentsToClass(String targetClassId) async {
-    int successCount = 0;
+  /// Mengimpor siswa dari CSV ke sub-collection `classes/{id}/students`.
+  ///
+  /// Mengembalikan `null` bila pengguna membatalkan pemilihan berkas.
+  /// Error (format CSV salah, izin Firestore, dll.) dilempar ke pemanggil
+  /// supaya pesan aslinya tampil di layar.
+  Future<ImportStudentsResult?> importStudentsToClass(String targetClassId) async {
+    state = const AsyncLoading();
     try {
-      state = const AsyncLoading();
-      
-      fp.FilePickerResult? result = await fp.FilePicker.platform.pickFiles(
-        type: fp.FileType.custom, allowedExtensions: ['csv'],
+      final picked = await fp.FilePicker.platform.pickFiles(
+        type: fp.FileType.custom,
+        allowedExtensions: ['csv'],
+        withData: true, // cadangan bila path tidak tersedia (content:// di Android)
       );
 
-      if (result == null) {
+      if (picked == null || picked.files.isEmpty) {
         state = const AsyncData(null);
-        return 0; 
+        return null;
       }
 
-      final file = File(result.files.single.path!);
-      final input = await file.readAsString();
-      final List<List<dynamic>> rows = const csv_pkg.CsvToListConverter().convert(input);
-      
-      if (rows.length <= 1) throw Exception('File CSV kosong atau hanya berisi header.');
+      final pf = picked.files.single;
+      final List<int> bytes;
+      if (pf.bytes != null) {
+        bytes = pf.bytes!;
+      } else if (pf.path != null) {
+        bytes = await File(pf.path!).readAsBytes();
+      } else {
+        throw const FormatException('Berkas tidak bisa dibaca. Coba salin berkas ke folder Download.');
+      }
+
+      final parsed = parseStudentCsv(decodeCsvBytes(bytes));
 
       final db = FirebaseFirestore.instance;
-      // Gunakan WriteBatch agar proses simpan 100 data sekaligus tidak berat
-      WriteBatch batch = db.batch();
+      final studentsRef = db.collection('classes').doc(targetClassId).collection('students');
 
-      for (int i = 1; i < rows.length; i++) {
-        final row = rows[i];
-        if (row.length < 3) continue; 
-
-        final name = row[0].toString();
-        final identifier = row[1].toString(); 
-        final gender = row[2].toString().toUpperCase();
-
-        // 1. KUNCI PERBAIKAN: Arahkan tepat ke sub-collection 'students' di dalam kelas!
-        final docRef = db.collection('classes').doc(targetClassId).collection('students').doc(); 
-
-        // 2. Masukkan ke dalam antrean batch
-        batch.set(docRef, {
-          'id': docRef.id,
-          'name': name,
-          'email': identifier,
-          'role': 'siswa',
-          'gender': gender,
-          'classId': targetClassId,
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-        
-        successCount++;
+      // Firestore membatasi 500 operasi per batch → kirim per 400.
+      const chunkSize = 400;
+      for (int start = 0; start < parsed.rows.length; start += chunkSize) {
+        final batch = db.batch();
+        for (final s in parsed.rows.skip(start).take(chunkSize)) {
+          final docRef = studentsRef.doc();
+          batch.set(docRef, {
+            'id': docRef.id,
+            'name': s.name,
+            'email': s.id, // dipakai tampilan daftar siswa & registrasi wajah
+            'nisNip': s.id, // dipakai sinkronisasi data wajah (face_database_service)
+            'role': 'siswa',
+            'gender': s.gender,
+            'classId': targetClassId,
+            'createdAt': FieldValue.serverTimestamp(),
+          });
+        }
+        await batch.commit();
       }
-      
-      // 3. Eksekusi simpan semua data secara serentak!
-      await batch.commit();
 
       state = const AsyncData(null);
-      return successCount;
-    } catch (e) {
-      state = AsyncError(e, StackTrace.current);
-      return 0;
+      return ImportStudentsResult(imported: parsed.rows.length, skipped: parsed.skipped);
+    } catch (e, st) {
+      state = AsyncError(e, st);
+      rethrow;
     }
   }
 }

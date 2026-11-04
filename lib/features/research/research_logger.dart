@@ -1,5 +1,5 @@
 // =========================================================================
-// PENCATAT DATA PENELITIAN (CSV LOKAL + FIRESTORE)
+// PENCATAT DATA PENELITIAN (CSV LOKAL)
 // =========================================================================
 // Dua jenis log:
 // 1. penelitian_log_wajah.csv  → 1 baris per wajah yang diproses
@@ -7,32 +7,29 @@
 // 2. penelitian_log_sesi.csv   → 1 baris per sesi absensi yang disimpan
 //    (metode wajah/manual, durasi, koreksi guru) → bahan RM 3
 //
-// File CSV disimpan di folder eksternal aplikasi (bisa diambil via USB atau
-// dibagikan lewat tombol "Bagikan Log"), dan salinannya dikirim ke Firestore
-// secara batch agar hemat kuota tulis.
+// File CSV hanya disimpan di folder eksternal aplikasi pada HP uji (diambil
+// via kabel USB atau tombol "Bagikan Log") dan tidak dikirim ke cloud.
+// Log tidak memuat nama siswa; NIM diganti kode S01–S30 di skrip analisis.
 // =========================================================================
 
-import 'dart:async';
 import 'dart:io';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:csv/csv.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../../core/ai/face_matching_service.dart';
 
 class ResearchLogger {
-  static const String koleksiWajah = 'penelitian_log_wajah';
-  static const String koleksiSesi = 'penelitian_log_sesi';
   static const String fileWajah = 'penelitian_log_wajah.csv';
   static const String fileSesi = 'penelitian_log_sesi.csv';
 
   static const List<String> kolomWajah = [
     'waktu', 'sumber', 'sesi_id', 'kondisi_cahaya', 'clahe', 'mode_verifikasi',
     'ambang', 'margin', 'file', 'label_nim', 'terdaftar', 'jumlah_wajah',
-    'indeks_wajah', 'raw_nim', 'raw_nama', 'jarak_terbaik', 'jarak_kedua',
+    'indeks_wajah', 'raw_nim', 'jarak_terbaik', 'jarak_kedua',
     'selisih', 'alasan', 'pred_nim', 'pred_nim_tunggal', 'pred_nim_margin',
     'nim_daftar_hadir', 'cocok_via', 't_deteksi_ms', 't_decode_ms',
     't_crop_ms', 't_clahe_ms', 't_embedding_ms', 't_matching_ms', 't_frame_ms',
+    'luminansi_wajah', 'luminansi_latar',
   ];
 
   static const List<String> kolomSesi = [
@@ -40,16 +37,10 @@ class ResearchLogger {
     'tanggal', 'jumlah_siswa', 'durasi_total_detik', 'durasi_scan_detik',
     'hadir_hasil_scan', 'hadir_akhir', 'koreksi_total', 'koreksi_jadi_hadir',
     'koreksi_batal_hadir', 'akurasi_scan_persen', 'kondisi_cahaya', 'clahe',
-    'mode_verifikasi',
+    'mode_verifikasi', 'waktu_simpan', 'durasi_sinkron_detik',
   ];
 
-  static const int _ukuranBatch = 400; // Batas aman di bawah limit 500 Firestore
-
-  static final List<Map<String, dynamic>> _antreanFirestore = [];
   static Future<void> _antreanTulis = Future.value();
-  static bool _sedangKirim = false;
-
-  static int get jumlahAntreanFirestore => _antreanFirestore.length;
 
   /// Folder penyimpanan log: /Android/data/<paket>/files/penelitian
   static Future<Directory> folderLog() async {
@@ -84,7 +75,6 @@ class ResearchLogger {
 
     return {
       'raw_nim': r.rawNim,
-      'raw_nama': r.rawName,
       'jarak_terbaik': _bulat(r.distance, 4),
       'jarak_kedua': _bulat(r.secondDistance, 4),
       'selisih': _bulat(selisih, 4),
@@ -105,19 +95,11 @@ class ResearchLogger {
   /// Mencatat satu atau beberapa baris log wajah
   static Future<void> catatWajah(List<Map<String, dynamic>> baris) {
     if (baris.isEmpty) return Future.value();
-    for (final b in baris) {
-      _antreanFirestore.add({...b, '_koleksi': koleksiWajah});
-    }
-    if (_antreanFirestore.length >= _ukuranBatch) {
-      unawaited(kirimKeFirestore());
-    }
     return _tulisCsv(fileWajah, kolomWajah, baris);
   }
 
-  /// Mencatat satu sesi absensi (langsung dikirim ke Firestore)
+  /// Mencatat satu sesi absensi
   static Future<void> catatSesi(Map<String, dynamic> baris) {
-    _antreanFirestore.add({...baris, '_koleksi': koleksiSesi});
-    unawaited(kirimKeFirestore());
     return _tulisCsv(fileSesi, kolomSesi, [baris]);
   }
 
@@ -146,33 +128,6 @@ class ResearchLogger {
     return _antreanTulis;
   }
 
-  /// Mengirim antrean log ke Firestore secara batch. Mengembalikan jumlah baris terkirim.
-  static Future<int> kirimKeFirestore() async {
-    if (_sedangKirim) return 0;
-    _sedangKirim = true;
-    int terkirim = 0;
-    try {
-      final db = FirebaseFirestore.instance;
-      while (_antreanFirestore.isNotEmpty) {
-        final potongan = _antreanFirestore.take(_ukuranBatch).toList();
-        final batch = db.batch();
-        for (final b in potongan) {
-          final data = Map<String, dynamic>.of(b)..remove('_koleksi');
-          batch.set(db.collection(b['_koleksi'] as String).doc(), data);
-        }
-        await batch.commit();
-        _antreanFirestore.removeRange(0, potongan.length);
-        terkirim += potongan.length;
-      }
-    } catch (e) {
-      // CSV lokal tetap aman; antrean dicoba lagi pada pengiriman berikutnya
-      print('[ResearchLogger] Gagal kirim ke Firestore: $e');
-    } finally {
-      _sedangKirim = false;
-    }
-    return terkirim;
-  }
-
   /// Membagikan file CSV (WhatsApp, Drive, email, dll.)
   static Future<bool> bagikan() async {
     await _antreanTulis;
@@ -187,7 +142,7 @@ class ResearchLogger {
     return true;
   }
 
-  /// Menghapus file CSV lokal (data di Firestore tidak ikut terhapus)
+  /// Menghapus file CSV lokal
   static Future<void> hapusLogLokal() async {
     await _antreanTulis;
     final folder = await folderLog();

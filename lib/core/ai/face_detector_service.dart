@@ -28,7 +28,7 @@ class FaceDetectorService {
       enableContours: false,
       enableLandmarks: false, // Hanya butuh bounding box, mempercepat deteksi hingga 2x lipat
       performanceMode: FaceDetectorMode.fast, // Mode fast ultra responsif (< 20ms) untuk live scanner
-      minFaceSize: 0.04, // Diperkecil ke 0.04 (4% frame) agar peka mendeteksi wajah jauh (2.5 s.d. 3.5+ meter)
+      minFaceSize: 0.1, // jarak penelitian 0,8–1 m
     );
     _faceDetector = FaceDetector(options: options);
   }

@@ -20,18 +20,23 @@ class ResearchConfig {
 
   /// Kondisi pencahayaan bawaan (nilai yang ditulis ke log → label tampilan)
   static const Map<String, String> kondisiBawaan = {
-    'terang': 'Terang normal',
-    'redup': 'Redup',
+    'memadai': 'Pencahayaan memadai',
+    'low_light': 'Low-light',
     'backlight': 'Backlight',
-    'samping_bayangan': 'Cahaya samping/bayangan',
   };
 
   static bool aktif = false;
   static bool gunakanClahe = true;
   static bool gunakanMargin = true;
-  static String kondisiCahaya = 'terang';
+  static String kondisiCahaya = 'memadai';
 
   static bool _sudahDimuat = false;
+
+  /// Nama kondisi versi lama yang tersimpan di Hive → nama sesuai laporan
+  static const Map<String, String> _kondisiLama = {
+    'terang': 'memadai',
+    'redup': 'low_light',
+  };
 
   // Nilai yang benar-benar dipakai sistem
   static bool get efektifClahe => aktif ? gunakanClahe : true;
@@ -53,7 +58,8 @@ class ResearchConfig {
       aktif = box.get('aktif', defaultValue: false) as bool;
       gunakanClahe = box.get('gunakanClahe', defaultValue: true) as bool;
       gunakanMargin = box.get('gunakanMargin', defaultValue: true) as bool;
-      kondisiCahaya = box.get('kondisiCahaya', defaultValue: 'terang') as String;
+      final kondisi = box.get('kondisiCahaya', defaultValue: 'memadai') as String;
+      kondisiCahaya = _kondisiLama[kondisi] ?? kondisi;
       _sudahDimuat = true;
     } catch (e) {
       print('[ResearchConfig] Gagal memuat konfigurasi: $e');

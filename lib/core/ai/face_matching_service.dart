@@ -54,12 +54,11 @@ class MatchResult {
 }
 
 class FaceMatchingService {
-  // Ambang batas jarak maksimum untuk menerima kecocokan wajah.
-  // 1.06 dioptimalkan agar peka mengenali wajah dari jarak jauh (2.5 s.d. 3.5 meter).
-  static const double batasTerima = 1.06;
-
-  // Selisih minimal antara kecocokan terbaik (pertama) dan kedua.
-  // Mencegah ambiguitas (wajah yang mirip dengan dua orang di database).
+  // Nilai awal dari tahap pengembangan. Nilai akhir ditetapkan dari data validasi
+  // (Bab III Subbab 3.4.3) lalu dimasukkan ke sini sebelum Eksperimen 3.
+  // batasTerima = ambang jarak maksimum untuk menerima kecocokan wajah (τ).
+  // selisihMinimal = selisih minimal kandidat kedua dan pertama (δ), mencegah ambiguitas.
+  static const double batasTerima = 1.0;
   static const double selisihMinimal = 0.06;
 
   // Konfigurasi aktif (bisa diubah oleh Mode Penelitian).

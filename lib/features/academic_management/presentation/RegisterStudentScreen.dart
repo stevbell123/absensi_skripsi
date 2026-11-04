@@ -4,9 +4,9 @@
 // SEBELUM: Foto dikirim ke server /register → server deteksi + simpan embedding
 // SESUDAH: Semua proses dilakukan 100% di smartphone:
 //   1. Google ML Kit → deteksi wajah (pastikan tepat 1 wajah)
-//   2. MobileFaceNet TFLite → embedding 128-d
+//   2. MobileFaceNet TFLite → embedding 192-d
 //   3. Simpan embedding ke Firestore koleksi 'face_embeddings'
-//   4. Foto thumbnail disimpan ke Firestore (base64, sama seperti sebelumnya)
+//   4. Foto wajah TIDAK disimpan; hanya embedding yang disimpan
 //
 // Perubahan utama:
 // - TIDAK ADA lagi HTTP request ke server
@@ -17,12 +17,9 @@
 
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:image/image.dart' as img;
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
@@ -178,31 +175,6 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
   }
 
   // =========================================================================
-  // SIMPAN THUMBNAIL KE FIRESTORE (sama seperti versi lama)
-  // =========================================================================
-  Future<void> _savePhotoToFirestore(String imagePath) async {
-    if (widget.classId.isEmpty || widget.studentDocId.isEmpty) return;
-    try {
-      final bytes = await XFile(imagePath).readAsBytes();
-      img.Image? originalImage = img.decodeImage(bytes);
-      if (originalImage != null) {
-        img.Image resizedImage = img.copyResize(originalImage, width: 150);
-        List<int> compressedBytes = img.encodeJpg(resizedImage, quality: 70);
-        String base64String = base64Encode(compressedBytes);
-
-        await FirebaseFirestore.instance
-            .collection('classes')
-            .doc(widget.classId)
-            .collection('students')
-            .doc(widget.studentDocId)
-            .update({'photoBase64': base64String});
-      }
-    } catch (e) {
-      debugPrint("Gagal update foto Base64 ke Firestore: $e");
-    }
-  }
-
-  // =========================================================================
   // DETEKSI + EMBEDDING SATU FOTO (BARU — ON-DEVICE)
   //
   // Menggantikan HTTP POST ke server /register.
@@ -268,44 +240,6 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
   }
 
   // =========================================================================
-  // SINKRONISASI SERVER VPS DI LATAR BELAKANG (ASINKRON)
-  // =========================================================================
-  Future<void> _syncToServer(String imagePath, String nim, String name) async {
-    // 1. Coba kirim ke Port 8001 (Server Baru: YOLOv26 + ArcFace)
-    try {
-      final uri = Uri.parse('http://103.175.206.22:8001/api/register-student');
-      final request = http.MultipartRequest('POST', uri);
-      request.fields['nim'] = nim;
-      request.fields['nama'] = name;
-      request.fields['class_id'] = widget.classId;
-      request.files.add(await http.MultipartFile.fromPath('file', imagePath));
-      final res = await request.send().timeout(const Duration(seconds: 8));
-      if (res.statusCode == 200) {
-        debugPrint('[SERVER 8001] ✅ Sukses sinkronisasi siswa ke server 8001.');
-        return;
-      }
-    } catch (e) {
-      debugPrint('[SERVER 8001] Info server 8001: $e');
-    }
-
-    // 2. Fallback kirim ke Port 8000 (Server Lama: YOLO + dlib)
-    try {
-      final uri = Uri.parse('http://103.175.206.22:8000/register');
-      final request = http.MultipartRequest('POST', uri);
-      request.fields['nim'] = nim;
-      request.fields['name'] = name;
-      request.fields['variasi'] = '1';
-      request.files.add(await http.MultipartFile.fromPath('file', imagePath));
-      final res = await request.send().timeout(const Duration(seconds: 8));
-      if (res.statusCode == 200) {
-        debugPrint('[SERVER 8000] ✅ Sukses sinkronisasi siswa ke server 8000.');
-      }
-    } catch (e) {
-      debugPrint('[SERVER 8000] Info server 8000: $e');
-    }
-  }
-
-  // =========================================================================
   // PINDAI & DAFTARKAN WAJAH (SEKALI PINDAI / SCAN)
   // =========================================================================
   Future<void> _registerFace() async {
@@ -345,16 +279,6 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
         embedding.denganClahe,
         embeddingTanpaClahe: embedding.tanpaClahe,
       );
-
-      // 4. Simpan thumbnail foto siswa ke Firestore (non-fatal jika permission tertutup)
-      try {
-        await _savePhotoToFirestore(picture.path);
-      } catch (fe) {
-        debugPrint('[FIRESTORE] Gagal simpan thumbnail foto siswa: $fe');
-      }
-
-      // 5. Sinkronkan ke server VPS di background
-      _syncToServer(picture.path, nim, name);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -411,16 +335,6 @@ class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
         embedding.denganClahe,
         embeddingTanpaClahe: embedding.tanpaClahe,
       );
-
-      // 2. Simpan thumbnail foto ke Firestore
-      try {
-        await _savePhotoToFirestore(image.path);
-      } catch (fe) {
-        debugPrint('[FIRESTORE] Gagal simpan thumbnail dari galeri: $fe');
-      }
-
-      // 3. Sinkronkan ke server VPS di background
-      _syncToServer(image.path, nim, name);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

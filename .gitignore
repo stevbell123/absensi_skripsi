@@ -61,3 +61,11 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Dokumentasi HTML lama (versi YOLO/server), disimpan lokal saja
+/*.html
+
+# Kunci tanda tangan APK rilis (rahasia, jangan di-commit)
+android/key.properties
+*.jks
+*.keystore

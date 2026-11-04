@@ -9,7 +9,6 @@ import '../models/attendance_model.dart';
 import 'AttendanceScreen.dart';
 import '../../research/research_config.dart';
 import '../../research/research_logger.dart';
-import '../../research/presentation/research_settings_sheet.dart';
 
 class AttendanceView extends ConsumerStatefulWidget {
   const AttendanceView({super.key});
@@ -53,7 +52,9 @@ class _AttendanceViewState extends ConsumerState<AttendanceView> {
     _statusSetelahScan = null;
   }
 
-  Future<void> _catatSesi() async {
+  /// [waktuSimpan] dan [durasiSinkron]: saat guru menekan Simpan dan lama sampai
+  /// Firestore mengonfirmasi penulisan (Bab III, waktu sinkronisasi).
+  Future<void> _catatSesi({DateTime? waktuSimpan, Duration? durasiSinkron}) async {
     if (!ResearchConfig.aktif || _sesiMulai == null) return;
 
     final selesai = DateTime.now();
@@ -99,6 +100,10 @@ class _AttendanceViewState extends ConsumerState<AttendanceView> {
       'kondisi_cahaya': ResearchConfig.kondisiCahaya,
       'clahe': pakaiWajah ? (ResearchConfig.efektifClahe ? 1 : 0) : '',
       'mode_verifikasi': pakaiWajah ? ResearchConfig.labelVerifikasi : '',
+      'waktu_simpan': waktuSimpan?.toIso8601String() ?? '',
+      'durasi_sinkron_detik': durasiSinkron != null
+          ? double.parse((durasiSinkron.inMilliseconds / 1000).toStringAsFixed(3))
+          : '',
     });
     _sesiMulai = null;
   }
@@ -196,14 +201,20 @@ class _AttendanceViewState extends ConsumerState<AttendanceView> {
     if (_isSubstituteMode) dataToSave['recordedBySubstitute'] = currentUserId;
 
     try {
+      // Saat offline, await baru selesai setelah koneksi kembali dan server mengonfirmasi
+      final waktuSimpan = DateTime.now();
+      final sw = Stopwatch()..start();
       await FirebaseFirestore.instance.collection('attendance').doc(docId).set(dataToSave, SetOptions(merge: true));
+      sw.stop();
       // Catat sesi SEBELUM status direset di bawah
-      await _catatSesi();
+      await _catatSesi(waktuSimpan: waktuSimpan, durasiSinkron: sw.elapsed);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tersimpan!'), backgroundColor: Colors.green));
         setState(() {
           for (var record in _records) {
             record.status = AttendanceStatus.alpa;
+            record.waktu = null;
+            record.jarak = null;
           }
         });
       }
@@ -234,17 +245,29 @@ class _AttendanceViewState extends ConsumerState<AttendanceView> {
                     style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87),
                   ),
                 ),
-                IconButton(
-                  icon: Icon(Icons.science,
-                      color: ResearchConfig.aktif ? Colors.orange : Colors.grey),
-                  tooltip: ResearchConfig.aktif
-                      ? 'Mode Penelitian aktif (sesi dicatat)'
-                      : 'Mode Penelitian',
-                  onPressed: () async {
-                    await tampilkanPengaturanPenelitian(context);
-                    if (mounted) setState(() {});
-                  },
-                ),
+                // Penanda saja: Mode Penelitian hanya diatur dari Developer Control Panel
+                if (ResearchConfig.aktif)
+                  Tooltip(
+                    message: 'Mode Penelitian aktif (sesi dicatat)',
+                    child: Container(
+                      margin: const EdgeInsets.only(right: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade50,
+                        border: Border.all(color: Colors.orange),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.science, color: Colors.orange, size: 16),
+                          SizedBox(width: 4),
+                          Text('Penelitian',
+                              style: TextStyle(color: Colors.orange, fontSize: 12, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                  ),
                 if (_records.isNotEmpty && _selectedScheduleData != null)
                   Container(
                     decoration: BoxDecoration(
