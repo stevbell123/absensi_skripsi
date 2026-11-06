@@ -1,0 +1,24 @@
+# =====================================================
+# Dependencies Server Absensi Wajah Guru
+# Install: pip install -r requirements.txt
+# =====================================================
+
+# Web Framework
+fastapi==0.115.0
+uvicorn==0.30.0
+python-multipart==0.0.9
+
+# AI / Computer Vision
+ultralytics>=8.2.0        # YOLO (deteksi wajah)
+deepface>=0.0.93          # ArcFace (embedding + pengenalan)
+opencv-python-headless>=4.9.0
+numpy>=1.26.0
+Pillow>=10.0.0
+
+# Firebase
+firebase-admin>=6.5.0
+
+# Utilitas
+tf-keras>=2.16.0          # Backend untuk DeepFace (lebih ringan dari tensorflow penuh)
+slowapi>=0.1.9            # Rate Limiter
+psutil>=5.9.0             # Monitoring Hardware RAM/CPU

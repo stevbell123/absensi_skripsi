@@ -1,0 +1,740 @@
+// =========================================================================
+// REGISTER STUDENT SCREEN (VERSI ON-DEVICE)
+// =========================================================================
+// SEBELUM: Foto dikirim ke server /register → server deteksi + simpan embedding
+// SESUDAH: Semua proses dilakukan 100% di smartphone:
+//   1. Google ML Kit → deteksi wajah (foto harus berisi TEPAT 1 wajah, Bab III 3.2.5)
+//   2. MobileFaceNet TFLite → embedding 192-d (dengan dan tanpa CLAHE)
+//   3. Simpan embedding ke Hive terenkripsi dan Firestore koleksi 'face_embeddings'
+//   4. Foto wajah TIDAK disimpan; hanya embedding yang disimpan
+//   5. Bila siswa sudah terdaftar, registrasi ulang harus dikonfirmasi; data wajah
+//      lama di HP dan Firestore diganti setelah foto baru berhasil diproses
+//
+// Perubahan utama:
+// - TIDAK ADA lagi HTTP request ke server
+// - Embedding dihitung langsung di HP
+// - Bisa berfungsi TANPA server Python aktif
+// =========================================================================
+
+import 'package:flutter/material.dart';
+import 'package:camera/camera.dart';
+import 'dart:io';
+import 'package:image_picker/image_picker.dart';
+import 'package:intl/intl.dart';
+import 'package:image/image.dart' as img;
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+
+import '../../../core/ai/face_detector_service.dart';
+import '../../../core/ai/face_embedding_service.dart';
+import '../../../core/ai/face_database_service.dart';
+
+class RegisterStudentScreen extends StatefulWidget {
+  final String initialNim;
+  final String initialName;
+  final String classId;
+  final String studentDocId;
+
+  const RegisterStudentScreen({
+    Key? key,
+    this.initialNim = '',
+    this.initialName = '',
+    this.classId = '',
+    this.studentDocId = '',
+  }) : super(key: key);
+
+  @override
+  State<RegisterStudentScreen> createState() => _RegisterStudentScreenState();
+}
+
+class _RegisterStudentScreenState extends State<RegisterStudentScreen> {
+  CameraController? _controller;
+  List<CameraDescription> _cameras = [];
+  int _selectedCameraIndex = 0;
+
+  bool _isCameraInitialized = false;
+  bool _isLoading = false;
+
+  bool _isFlashOn = false;
+  bool _isExposureLocked = false;
+
+  final TextEditingController _nimController = TextEditingController();
+  final TextEditingController _nameController = TextEditingController();
+
+  // === SERVICE AI (ON-DEVICE) ===
+  late FaceDetectorService _detectorService;
+  late FaceEmbeddingService _embeddingService;
+  late FaceDatabaseService _databaseService;
+
+  bool _isAiReady = false;
+  String _aiStatusText = 'Memuat model AI...';
+
+  // Status registrasi NIS yang sedang diisi: null = belum diketahui
+  bool? _sudahTerdaftar;
+  DateTime? _waktuTerdaftar;
+  // NIS yang registrasi ulangnya sudah dikonfirmasi (agar dialog tidak muncul lagi
+  // bila foto baru harus diambil ulang karena wajah tidak terdeteksi)
+  String? _ulangDikonfirmasiUntuk;
+
+  @override
+  void initState() {
+    super.initState();
+    _nimController.text = widget.initialNim;
+    _nameController.text = widget.initialName;
+    _initializeCamera();
+    _initializeAI();
+  }
+
+  // =========================================================================
+  // CEK SISWA SUDAH TERDAFTAR & KONFIRMASI REGISTRASI ULANG
+  // =========================================================================
+  Future<void> _cekStatusRegistrasi() async {
+    final nim = _nimController.text.trim();
+    if (nim.isEmpty) return;
+    final hasil = await _databaseService.cekTerdaftar(nim);
+    if (!mounted || _nimController.text.trim() != nim) return;
+    setState(() {
+      _sudahTerdaftar = hasil.terdaftar;
+      _waktuTerdaftar = hasil.waktu;
+    });
+  }
+
+  String _formatWaktu(DateTime t) => DateFormat('dd-MM-yyyy HH:mm').format(t);
+
+  /// Mengembalikan true bila registrasi boleh dilanjutkan. Bila siswa sudah punya
+  /// data wajah, guru/admin harus memilih "Registrasi Ulang". Data lama di HP ini dan
+  /// di Firebase baru diganti setelah foto baru berhasil diproses (dokumen NIS yang
+  /// sama ditimpa), sehingga siswa tidak kehilangan data bila foto baru gagal.
+  Future<bool> _bolehLanjutRegistrasi(String nim, String name) async {
+    if (_ulangDikonfirmasiUntuk == nim) return true;
+
+    final hasil = await _databaseService.cekTerdaftar(nim);
+    if (!mounted) return false;
+    setState(() {
+      _sudahTerdaftar = hasil.terdaftar;
+      _waktuTerdaftar = hasil.waktu;
+    });
+    if (!hasil.terdaftar) return true;
+
+    final ya = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Siswa ini sudah diregistrasi'),
+        content: Text(
+          '$name ($nim) sudah memiliki data wajah'
+          '${hasil.waktu != null ? ' (registrasi terakhir ${_formatWaktu(hasil.waktu!)})' : ''}.\n\n'
+          'Registrasi ulang akan menghapus data wajah lama di HP ini dan di Firebase, '
+          'lalu menggantinya dengan foto baru. Data lama baru diganti setelah foto baru '
+          'berhasil diproses.\n\n'
+          'Catatan penelitian: bila kalibrasi parameter sudah dilakukan, registrasi ulang '
+          'mengharuskan kalibrasi diulang (Bab III 3.4.6).',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Batal')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(c, true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.orange.shade700, foregroundColor: Colors.white),
+            child: const Text('Registrasi Ulang'),
+          ),
+        ],
+      ),
+    );
+    if (ya == true) _ulangDikonfirmasiUntuk = nim;
+    return ya == true;
+  }
+
+  /// Pesan setelah data wajah tersimpan. [keFirebase] false = hanya tersimpan di HP ini.
+  void _tampilkanBerhasil(String name, String nim, bool keFirebase, String sumber) {
+    if (!mounted) return;
+    final ulang = _sudahTerdaftar == true;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(keFirebase
+            ? "✅ Berhasil! Wajah $name ($nim) ${ulang ? 'diregistrasi ulang (data lama diganti)' : 'terdaftar'} dari $sumber."
+            : "⚠️ Wajah $name ($nim) tersimpan di HP ini, tetapi Firebase gagal diperbarui. "
+                "Periksa koneksi/izin akun, lalu ulangi registrasi."),
+        backgroundColor: keFirebase ? Colors.green : Colors.orange.shade800,
+        duration: Duration(seconds: keFirebase ? 3 : 8),
+      ),
+    );
+  }
+
+  // =========================================================================
+  // INISIALISASI AI
+  // Hanya perlu load model MobileFaceNet (~5MB, <1 detik)
+  // Tidak perlu sinkron database karena ini registrasi, bukan pencocokan
+  // =========================================================================
+  Future<void> _initializeAI() async {
+    try {
+      _detectorService = FaceDetectorService();
+      _embeddingService = FaceEmbeddingService();
+      _databaseService = FaceDatabaseService();
+
+      await _embeddingService.initialize();
+      await _databaseService.initHive();
+
+      if (_embeddingService.isReady) {
+        setState(() {
+          _isAiReady = true;
+          _aiStatusText = '✅ AI siap';
+        });
+        _cekStatusRegistrasi();
+      } else {
+        setState(() => _aiStatusText = '❌ Gagal memuat model');
+      }
+    } catch (e) {
+      setState(() => _aiStatusText = '❌ Error: $e');
+      debugPrint('[AI] Gagal inisialisasi: $e');
+    }
+  }
+
+  Future<void> _initializeCamera([int cameraIndex = -1]) async {
+    try {
+      if (_cameras.isEmpty) _cameras = await availableCameras();
+      if (_cameras.isEmpty) return;
+
+      if (cameraIndex == -1) {
+        _selectedCameraIndex = _cameras
+            .indexWhere((c) => c.lensDirection == CameraLensDirection.back);
+        if (_selectedCameraIndex == -1) _selectedCameraIndex = 0;
+      } else {
+        _selectedCameraIndex = cameraIndex;
+      }
+
+      final camera = _cameras[_selectedCameraIndex];
+      if (_controller != null) await _controller!.dispose();
+
+      _controller = CameraController(camera, ResolutionPreset.high,
+          enableAudio: false);
+      await _controller!.initialize();
+
+      _isFlashOn = false;
+      _isExposureLocked = false;
+
+      if (mounted) setState(() => _isCameraInitialized = true);
+    } catch (e) {
+      debugPrint("Error inisialisasi kamera: $e");
+    }
+  }
+
+  void _switchCamera() async {
+    if (_cameras.length < 2 || _isLoading) return;
+    setState(() => _isCameraInitialized = false);
+    final currentDirection = _cameras[_selectedCameraIndex].lensDirection;
+    final newIndex =
+        _cameras.indexWhere((c) => c.lensDirection != currentDirection);
+    await _initializeCamera(
+        newIndex != -1 ? newIndex : (_selectedCameraIndex + 1) % _cameras.length);
+  }
+
+  void _toggleFlash() {
+    if (_controller != null && _controller!.value.isInitialized) {
+      setState(() {
+        _isFlashOn = !_isFlashOn;
+        _controller!
+            .setFlashMode(_isFlashOn ? FlashMode.torch : FlashMode.off);
+      });
+    }
+  }
+
+  void _toggleExposureLock() async {
+    if (_controller != null && _controller!.value.isInitialized) {
+      setState(() => _isExposureLocked = !_isExposureLocked);
+      if (_isExposureLocked) {
+        await _controller!.setExposureMode(ExposureMode.locked);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text("🔒 Cahaya Dikunci")));
+        }
+      } else {
+        await _controller!.setExposureMode(ExposureMode.auto);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text("🔓 Cahaya Otomatis")));
+        }
+      }
+    }
+  }
+
+  // =========================================================================
+  // DETEKSI + EMBEDDING SATU FOTO (BARU — ON-DEVICE)
+  //
+  // Menggantikan HTTP POST ke server /register.
+  // Langkah:
+  //   1. ML Kit deteksi wajah di foto
+  //   2. Validasi: harus tepat 1 wajah (Bab III 3.2.5, Tabel 3.12, uji BB-05)
+  //   3. Crop → MobileFaceNet → embedding 192-d
+  //
+  // Mengembalikan 2 embedding dari foto yang sama: dengan CLAHE (dipakai
+  // absensi normal) dan tanpa CLAHE (pembanding eksperimen RM 1).
+  // =========================================================================
+  Future<({List<double> denganClahe, List<double> tanpaClahe})?> _processOnePhoto(
+      String filePath) async {
+    // 1. Deteksi wajah menggunakan ML Kit
+    final inputImage = InputImage.fromFilePath(filePath);
+    final faces = await _detectorService.detectFaces(inputImage);
+
+    if (faces.isEmpty) {
+      _showError("Wajah tidak terdeteksi. Posisikan wajah di dalam bingkai oval, lalu ambil ulang foto.");
+      return null;
+    }
+
+    // Foto registrasi harus berisi tepat satu wajah. Wajah lain sekecil apa pun
+    // (orang di belakang, poster, pantulan) membuat foto ditolak dan diambil ulang.
+    if (faces.length > 1) {
+      _showError("Terdeteksi ${faces.length} wajah. Foto registrasi harus berisi tepat 1 wajah. "
+          "Pastikan tidak ada orang, poster, atau pantulan wajah lain, lalu ambil ulang foto.");
+      return null;
+    }
+
+    final dominantFace = faces.first;
+
+    // 2. Baca gambar untuk di-crop
+    final imageBytes = await File(filePath).readAsBytes();
+    final fullImage = img.decodeImage(imageBytes);
+    if (fullImage == null) {
+      _showError("Gagal membaca gambar.");
+      return null;
+    }
+
+    // 3. Crop dan hitung embedding berdasarkan wajah dominan siswa
+    final croppedFace = _embeddingService.cropAndAlignFace(
+      fullImage,
+      dominantFace.boundingBox,
+    );
+    final embedding = _embeddingService.extractEmbedding(croppedFace);
+    final embeddingTanpaClahe =
+        _embeddingService.extractEmbedding(croppedFace, applyClahe: false);
+
+    debugPrint('[AI] Embedding dominan berhasil dihitung (${embedding.length}-d)');
+    return (denganClahe: embedding, tanpaClahe: embeddingTanpaClahe);
+  }
+
+  // =========================================================================
+  // PINDAI & DAFTARKAN WAJAH (SEKALI PINDAI / SCAN)
+  // =========================================================================
+  Future<void> _registerFace() async {
+    final nim = _nimController.text.trim();
+    final name = _nameController.text.trim();
+
+    if (nim.isEmpty || name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("⚠️ ID/NIM dan Nama tidak boleh kosong!")));
+      return;
+    }
+    if (_controller == null ||
+        !_controller!.value.isInitialized ||
+        _isLoading) return;
+    if (!_isAiReady) {
+      _showError("AI belum siap. Tunggu sebentar...");
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      // 0. Siswa sudah terdaftar → harus dikonfirmasi sebagai registrasi ulang
+      if (!await _bolehLanjutRegistrasi(nim, name)) return;
+
+      // 1. Ambil foto dari kamera
+      XFile picture = await _controller!.takePicture();
+
+      // 2. Deteksi wajah & ekstrak embedding secara on-device
+      final embedding = await _processOnePhoto(picture.path);
+      if (embedding == null) {
+        setState(() => _isLoading = false);
+        return;
+      }
+
+      // 3. Simpan embedding ke database lokal (Hive) & Firestore (Cloud);
+      //    pada registrasi ulang, data lama dengan NIS yang sama ditimpa
+      final keFirebase = await _databaseService.saveEmbedding(
+        nim,
+        name,
+        embedding.denganClahe,
+        embeddingTanpaClahe: embedding.tanpaClahe,
+      );
+
+      if (mounted) {
+        _tampilkanBerhasil(name, nim, keFirebase, 'kamera');
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      _showError("Gagal mendaftarkan wajah: $e");
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // =========================================================================
+  // DAFTAR VIA GALERI (1 Foto, on-device)
+  // =========================================================================
+  Future<void> _pickFromGallery() async {
+    final nim = _nimController.text.trim();
+    final name = _nameController.text.trim();
+
+    if (nim.isEmpty || name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("⚠️ ID/NIM dan Nama tidak boleh kosong!")));
+      return;
+    }
+    if (!_isAiReady) {
+      _showError("AI belum siap. Tunggu sebentar...");
+      return;
+    }
+
+    try {
+      // Siswa sudah terdaftar → harus dikonfirmasi sebagai registrasi ulang
+      if (!await _bolehLanjutRegistrasi(nim, name)) return;
+
+      final ImagePicker picker = ImagePicker();
+      final XFile? image = await picker.pickImage(source: ImageSource.gallery);
+      if (image == null) return;
+
+      setState(() => _isLoading = true);
+
+      // Proses on-device
+      final embedding = await _processOnePhoto(image.path);
+      if (embedding == null) {
+        setState(() => _isLoading = false);
+        return;
+      }
+
+      // 1. Simpan embedding ke Hive lokal & Firestore;
+      //    pada registrasi ulang, data lama dengan NIS yang sama ditimpa
+      final keFirebase = await _databaseService.saveEmbedding(
+        nim,
+        name,
+        embedding.denganClahe,
+        embeddingTanpaClahe: embedding.tanpaClahe,
+      );
+
+      if (mounted) {
+        _tampilkanBerhasil(name, nim, keFirebase, 'galeri');
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("❌ Error: $e"), backgroundColor: Colors.redAccent));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  void _showError(String message) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("❌ $message"), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    _nimController.dispose();
+    _nameController.dispose();
+    _detectorService.dispose();
+    _embeddingService.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_isCameraInitialized) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        title: const Text("Registrasi Wajah AI"),
+        backgroundColor: Colors.white,
+        foregroundColor: Colors.black,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: Icon(
+                _isExposureLocked
+                    ? Icons.brightness_auto
+                    : Icons.brightness_auto_outlined,
+                color: _isExposureLocked ? Colors.indigo : Colors.black87),
+            onPressed: _toggleExposureLock,
+          ),
+          IconButton(
+              icon: Icon(_isFlashOn ? Icons.flash_on : Icons.flash_off,
+                  color: Colors.black87),
+              onPressed: _toggleFlash),
+          IconButton(
+              icon: const Icon(Icons.flip_camera_ios,
+                  color: Colors.black87, size: 28),
+              onPressed: _switchCamera),
+          const SizedBox(width: 8),
+        ],
+      ),
+      body: SingleChildScrollView(
+        child: Column(
+          children: [
+            // === PREVIEW KAMERA DENGAN OVAL SCANNER FRAME ===
+            Container(
+              width: double.infinity,
+              height: 400,
+              color: Colors.black,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  ClipRect(
+                    child: FittedBox(
+                      fit: BoxFit.cover,
+                      child: SizedBox(
+                        width: _controller!.value.previewSize!.height,
+                        height: _controller!.value.previewSize!.width,
+                        child: LayoutBuilder(builder: (context, constraints) {
+                          return GestureDetector(
+                            onTapDown: (details) async {
+                              if (_controller == null ||
+                                  !_controller!.value.isInitialized) return;
+                              final offset = Offset(
+                                  details.localPosition.dx / constraints.maxWidth,
+                                  details.localPosition.dy /
+                                      constraints.maxHeight);
+                              await _controller!.setFocusPoint(offset);
+                              if (!_isExposureLocked) {
+                                await _controller!.setExposurePoint(offset);
+                              }
+                            },
+                            child: CameraPreview(_controller!),
+                          );
+                        }),
+                      ),
+                    ),
+                  ),
+
+                  // Bingkai Oval Scanner Target Wajah
+                  Container(
+                    width: 220,
+                    height: 290,
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: _isAiReady ? Colors.greenAccent : Colors.white,
+                        width: 3,
+                      ),
+                      borderRadius: BorderRadius.circular(140),
+                      boxShadow: [
+                        BoxShadow(
+                          color: (_isAiReady ? Colors.greenAccent : Colors.white)
+                              .withOpacity(0.2),
+                          blurRadius: 15,
+                          spreadRadius: 2,
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Label Panduan di Bawah Bingkai
+                  Positioned(
+                    bottom: 16,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.65),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.face, color: Colors.greenAccent, size: 18),
+                          SizedBox(width: 8),
+                          Text(
+                            "Posisikan wajah di dalam bingkai oval",
+                            style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // === STATUS AI ===
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              color: _isAiReady ? Colors.green.shade50 : Colors.orange.shade50,
+              child: Text(
+                _aiStatusText,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                  color: _isAiReady
+                      ? Colors.green.shade800
+                      : Colors.orange.shade800,
+                ),
+              ),
+            ),
+
+            // === STATUS SUDAH TERDAFTAR (REGISTRASI ULANG) ===
+            if (_sudahTerdaftar == true)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.fromLTRB(24, 14, 24, 0),
+                decoration: BoxDecoration(
+                  color: Colors.orange.shade50,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.orange.shade300),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.how_to_reg, color: Colors.orange.shade800, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Siswa ini sudah diregistrasi'
+                        '${_waktuTerdaftar != null ? ' (${_formatWaktu(_waktuTerdaftar!)})' : ''}. '
+                        'Tombol di bawah akan melakukan registrasi ulang dan mengganti '
+                        'data wajah lama di HP ini dan di Firebase.',
+                        style: TextStyle(fontSize: 13, color: Colors.orange.shade900),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            // === PANDUAN PINDAI ===
+            Container(
+              padding: const EdgeInsets.all(14),
+              margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+              decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.blue.shade200)),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.qr_code_scanner, color: Colors.indigo, size: 20),
+                      SizedBox(width: 8),
+                      Text("Panduan Pindai Wajah Siswa:",
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.indigo,
+                              fontSize: 14)),
+                    ],
+                  ),
+                  SizedBox(height: 8),
+                  Text("1. Arahkan wajah siswa tepat di dalam bingkai oval.",
+                      style: TextStyle(fontSize: 13, color: Colors.black87)),
+                  SizedBox(height: 4),
+                  Text("2. Pastikan pencahayaan cukup dan wajah siswa menatap lurus.",
+                      style: TextStyle(fontSize: 13, color: Colors.black87)),
+                  SizedBox(height: 4),
+                  Text("3. Tekan tombol 'Pindai & Daftarkan Wajah' di bawah.",
+                      style: TextStyle(fontSize: 13, color: Colors.black87)),
+                ],
+              ),
+            ),
+
+            // === FORM NIM + NAMA ===
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Column(
+                children: [
+                  TextField(
+                    controller: _nimController,
+                    // NIS diubah → status terdaftar dicek ulang saat tombol ditekan
+                    onChanged: (_) {
+                      if (_sudahTerdaftar != null || _ulangDikonfirmasiUntuk != null) {
+                        setState(() {
+                          _sudahTerdaftar = null;
+                          _waktuTerdaftar = null;
+                          _ulangDikonfirmasiUntuk = null;
+                        });
+                      }
+                    },
+                    decoration: InputDecoration(
+                      labelText: 'ID / NIM / Email Siswa',
+                      prefixIcon: const Icon(Icons.badge),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8)),
+                      filled: true,
+                      fillColor: Colors.grey.shade100,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _nameController,
+                    decoration: InputDecoration(
+                      labelText: 'Nama Lengkap Siswa',
+                      prefixIcon: const Icon(Icons.person),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8)),
+                      filled: true,
+                      fillColor: Colors.grey.shade100,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+
+                  // === TOMBOL PINDAI WAJAH + GALERI ===
+                  Row(
+                    children: [
+                      Expanded(
+                        flex: 3,
+                        child: ElevatedButton.icon(
+                          onPressed:
+                              (_isLoading || !_isAiReady) ? null : _registerFace,
+                          icon: _isLoading
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                      color: Colors.white, strokeWidth: 2))
+                              : const Icon(Icons.document_scanner, size: 22),
+                          label: Text(
+                              _sudahTerdaftar == true
+                                  ? "Registrasi Ulang Wajah"
+                                  : "Pindai & Daftarkan Wajah",
+                              style:
+                                  TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+                          style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.indigo,
+                              foregroundColor: Colors.white,
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 15),
+                              elevation: 2,
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10))),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        flex: 1,
+                        child: OutlinedButton(
+                          onPressed:
+                              (_isLoading || !_isAiReady) ? null : _pickFromGallery,
+                          child: const Icon(Icons.photo_library, color: Colors.indigo),
+                          style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              side: const BorderSide(color: Colors.indigo, width: 1.5),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10))),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 30),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
